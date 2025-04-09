@@ -167,7 +167,13 @@ def generate_projections(
     embeddings_list,
     method='tsne',
     pca_fit_basis='first',
-    max_frames=None
+    max_frames=None,
+    reverse_computation=False,
+    random_state=42,
+    tsne_init='pca', #'pca' or 'random'
+    tsne_perplexity=30.0, # often between 5–50
+    umap_n_neighbors=None,
+    umap_min_dist=1.0,
 ):
     from sklearn.decomposition import PCA
     from sklearn.manifold import TSNE
@@ -197,14 +203,22 @@ def generate_projections(
             projections.append(reducer.transform(embeddings_list[i]))
 
     elif method == 'tsne':
-        tsne = TSNE(n_components=2, init='pca', random_state=42)
-        projections.append(tsne.fit_transform(embeddings_list[0]))
-        for i in range(1, max_frames):
-            tsne = TSNE(n_components=2, init=projections[-1], random_state=42)
-            projections.append(tsne.fit_transform(embeddings_list[i]))
+        tsne = TSNE(n_components=2, init=tsne_init, perplexity=tsne_perplexity, random_state=random_state)
+        tsne.fit(basis_data)
+        if reverse_computation:
+            projections = [None] * max_frames
+            projections[-1] = tsne.fit_transform(embeddings_list[max_frames - 1])
+            for i in range(max_frames - 2, -1, -1):
+                tsne = TSNE(n_components=2, init=projections[i + 1], perplexity=tsne_perplexity, random_state=random_state)
+                projections[i] = tsne.fit_transform(embeddings_list[i])
+        else:
+            projections.append(tsne.fit_transform(embeddings_list[0]))
+            for i in range(1, max_frames):
+                tsne = TSNE(n_components=2, init=projections[-1], perplexity=tsne_perplexity, random_state=random_state)
+                projections.append(tsne.fit_transform(embeddings_list[i]))
 
     elif method == 'umap':
-        reducer = umap.UMAP(n_components=2)
+        reducer = umap.UMAP(n_components=2, n_neighbors=umap_n_neighbors, min_dist=umap_min_dist)
         reducer.fit(basis_data)
         for i in range(max_frames):
             projection = reducer.transform(embeddings_list[i])
@@ -332,7 +346,6 @@ def show_with_slider(
         scatter.set_array(np.array(labels[0]))
         fig.canvas.draw_idle()
 
-    # Then inside your code
     slider = widgets.Play(min=0, max=len(projections)-1, step=1)
     slider_control = widgets.IntSlider(min=0, max=len(projections)-1, step=1)
     widgets.jslink((slider, 'value'), (slider_control, 'value'))
