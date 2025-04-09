@@ -1,9 +1,12 @@
+import matplotlib
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from torch.nn import CrossEntropyLoss
 from IPython.display import clear_output
 import logging
+import ipywidgets as widgets
+from IPython.display import display
 
 def train_model_with_embedding_tracking(
         model,
@@ -27,6 +30,14 @@ def train_model_with_embedding_tracking(
 
     test_subset_embeddings = []
     test_subset_labels = []
+
+    # Place this outside your loop (once)
+    backend = matplotlib.get_backend().lower()
+    if 'widget' in backend:
+        fig, ax1 = plt.subplots(figsize=(8, 4))
+        ax2 = ax1.twinx()
+    else:
+        fig = ax1 = ax2 = None  # placeholder
 
     for epoch in range(epochs):
         model.train()
@@ -193,19 +204,26 @@ def generate_projections(
             projections.append(tsne.fit_transform(embeddings_list[i]))
 
     elif method == 'umap':
-        init_2d = 'pca'
+        reducer = umap.UMAP(n_components=2)
+        reducer.fit(basis_data)
         for i in range(max_frames):
-            prev_emb = embeddings_list[i - 1] if i > 0 else embeddings_list[i]
-            next_emb = embeddings_list[i + 1] if i < len(embeddings_list) - 1 else embeddings_list[i]
-            curr_emb = embeddings_list[i]
-            fit_data = np.concatenate([prev_emb, curr_emb, next_emb], axis=0)
-
-            reducer = umap.UMAP(n_components=2, init=init_2d)
-            reducer.fit(fit_data)
-            projection = reducer.transform(curr_emb)
-
+            projection = reducer.transform(embeddings_list[i])
             projections.append(projection)
-            init_2d = projection  # use current as init for next
+
+#     elif method == 'umap':
+#         init_2d = 'pca'
+#         for i in range(max_frames):
+#             prev_emb = embeddings_list[i - 1] if i > 0 else embeddings_list[i]
+#             next_emb = embeddings_list[i + 1] if i < len(embeddings_list) - 1 else embeddings_list[i]
+#             curr_emb = embeddings_list[i]
+#             fit_data = np.concatenate([prev_emb, curr_emb, next_emb], axis=0)
+#
+#             reducer = umap.UMAP(n_components=2, init=init_2d)
+#             reducer.fit(fit_data)
+#             projection = reducer.transform(curr_emb)
+#
+#             projections.append(projection)
+#             init_2d = projection  # use current as init for next
 
     return projections
 
@@ -266,3 +284,142 @@ def animate_projections(
     )
 
     return ani
+
+def show_with_slider(
+        projections,
+        labels,
+        figsize=(5, 5),
+        cmap='tab10',
+        dot_size=5,
+        alpha=0.5,
+        interpolate=False,
+        steps_per_transition=10
+    ):
+    projections = np.array(projections)
+
+    # Interpolate if requested
+    if interpolate:
+        projections_interp = []
+        for a, b in zip(projections[:-1], projections[1:]):
+            for alpha_step in np.linspace(0, 1, steps_per_transition, endpoint=False):
+                interp = (1 - alpha_step) * a + alpha_step * b
+                projections_interp.append(interp)
+        projections_interp.append(projections[-1])
+    else:
+        projections_interp = projections
+
+    projections = projections_interp
+
+    # Setup figure
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Axis limits
+    all_proj = np.concatenate(projections, axis=0)
+    max_abs = np.max(np.abs(all_proj))
+    ax.set_xlim(-max_abs, max_abs)
+    ax.set_ylim(-max_abs, max_abs)
+    ax.set_aspect('equal')
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+    # Initial scatter
+    scatter = ax.scatter(projections[0][:, 0], projections[0][:, 1],
+                         c=labels[0], cmap=cmap, s=dot_size, alpha=alpha)
+
+    # Slider and update
+    def update(frame_idx):
+        scatter.set_offsets(projections[frame_idx])
+        scatter.set_array(np.array(labels[0]))
+        fig.canvas.draw_idle()
+
+    # Then inside your code
+    slider = widgets.Play(min=0, max=len(projections)-1, step=1)
+    slider_control = widgets.IntSlider(min=0, max=len(projections)-1, step=1)
+    widgets.jslink((slider, 'value'), (slider_control, 'value'))
+
+    out = widgets.interactive_output(update, {'frame_idx': slider_control})
+    display(widgets.VBox([widgets.HBox([slider, slider_control]), out]))
+
+
+def show_multiple_projections_with_slider(
+    projections_list,
+    labels,
+    titles=None,
+    figsize_per_plot=(5, 5),
+    cmap='tab10',
+    dot_size=5,
+    alpha=0.6,
+    interpolate=False,
+    steps_per_transition=10,
+    shared_axes=True
+):
+    num_views = len(projections_list)
+    projections_list = [np.array(p) for p in projections_list]
+
+    # Interpolation
+    def interpolate_projections(projs):
+        if not interpolate:
+            return projs
+        projs_interp = []
+        for a, b in zip(projs[:-1], projs[1:]):
+            for alpha_step in np.linspace(0, 1, steps_per_transition, endpoint=False):
+                interp = (1 - alpha_step) * a + alpha_step * b
+                projs_interp.append(interp)
+        projs_interp.append(projs[-1])
+        return np.array(projs_interp)
+
+    projections_list = [interpolate_projections(p) for p in projections_list]
+
+    # Verify all have the same number of frames
+    n_frames = len(projections_list[0])
+    for p in projections_list:
+        assert len(p) == n_frames, "All projection sets must have the same number of frames"
+
+    # Setup figure with dynamic subplots
+    fig, axes = plt.subplots(1, num_views, figsize=(figsize_per_plot[0] * num_views, figsize_per_plot[1]))
+
+    if num_views == 1:
+        axes = [axes]
+
+    # Precompute axis limits
+    if shared_axes:
+        all_proj = np.concatenate([np.concatenate(p) for p in projections_list])
+        global_max = np.max(np.abs(all_proj))
+        axis_limits = [(-global_max, global_max)] * num_views
+    else:
+        axis_limits = []
+        for p in projections_list:
+            max_val = np.max(np.abs(np.concatenate(p)))
+            axis_limits.append((-max_val, max_val))
+
+    # Create initial scatter plots
+    scatters = []
+    for i, ax in enumerate(axes):
+        xlim, ylim = axis_limits[i], axis_limits[i]
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+        ax.set_aspect('equal')
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+        title = titles[i] if titles and i < len(titles) else f"View {i+1}"
+        ax.set_title(title)
+
+        sc = ax.scatter(projections_list[i][0][:, 0], projections_list[i][0][:, 1],
+                        c=labels[0], cmap=cmap, s=dot_size, alpha=alpha)
+        scatters.append(sc)
+
+    # Update all subplots
+    def update(frame_idx):
+        for i in range(num_views):
+            scatters[i].set_offsets(projections_list[i][frame_idx])
+            scatters[i].set_array(np.array(labels[0]))
+        fig.canvas.draw_idle()
+
+    # Interactive slider + play
+    slider = widgets.Play(min=0, max=n_frames - 1, step=1)
+    slider_control = widgets.IntSlider(min=0, max=n_frames - 1, step=1)
+    widgets.jslink((slider, 'value'), (slider_control, 'value'))
+
+    out = widgets.interactive_output(update, {'frame_idx': slider_control})
+    display(widgets.VBox([widgets.HBox([slider, slider_control]), out]))
