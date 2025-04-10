@@ -1,3 +1,5 @@
+import math
+
 import matplotlib
 import torch
 import numpy as np
@@ -172,8 +174,9 @@ def generate_projections(
     random_state=42,
     tsne_init='pca', #'pca' or 'random'
     tsne_perplexity=30.0, # often between 5–50
-    umap_n_neighbors=None,
-    umap_min_dist=1.0,
+    umap_n_neighbors=15,
+    umap_min_dist=0.1,
+    metric='euclidean', # for umap and tsne
 ):
     from sklearn.decomposition import PCA
     from sklearn.manifold import TSNE
@@ -187,14 +190,18 @@ def generate_projections(
     max_frames = max_frames or len(embeddings_list)
 
     # Determine basis data
-    if pca_fit_basis == 'first':
+    if isinstance(pca_fit_basis, int):
+        basis_data = embeddings_list[pca_fit_basis]
+    elif pca_fit_basis == 'first':
         basis_data = embeddings_list[0]
     elif pca_fit_basis == 'last':
         basis_data = embeddings_list[-1]
     elif pca_fit_basis == 'last_visualized':
         basis_data = embeddings_list[max_frames - 1]
-    else:  # 'all'
+    elif pca_fit_basis == 'all':
         basis_data = np.concatenate(embeddings_list, axis=0)
+    else:
+        raise ValueError(f"Invalid pca_fit_basis: {pca_fit_basis}")
 
     if method == 'pca':
         reducer = PCA(n_components=2)
@@ -203,22 +210,22 @@ def generate_projections(
             projections.append(reducer.transform(embeddings_list[i]))
 
     elif method == 'tsne':
-        tsne = TSNE(n_components=2, init=tsne_init, perplexity=tsne_perplexity, random_state=random_state)
+        tsne = TSNE(n_components=2, init=tsne_init, perplexity=tsne_perplexity, random_state=random_state, metric=metric)
         tsne.fit(basis_data)
         if reverse_computation:
             projections = [None] * max_frames
             projections[-1] = tsne.fit_transform(embeddings_list[max_frames - 1])
             for i in range(max_frames - 2, -1, -1):
-                tsne = TSNE(n_components=2, init=projections[i + 1], perplexity=tsne_perplexity, random_state=random_state)
+                tsne = TSNE(n_components=2, init=projections[i + 1], perplexity=tsne_perplexity, random_state=random_state, metric=metric)
                 projections[i] = tsne.fit_transform(embeddings_list[i])
         else:
             projections.append(tsne.fit_transform(embeddings_list[0]))
             for i in range(1, max_frames):
-                tsne = TSNE(n_components=2, init=projections[-1], perplexity=tsne_perplexity, random_state=random_state)
+                tsne = TSNE(n_components=2, init=projections[-1], perplexity=tsne_perplexity, random_state=random_state, metric=metric)
                 projections.append(tsne.fit_transform(embeddings_list[i]))
 
     elif method == 'umap':
-        reducer = umap.UMAP(n_components=2, n_neighbors=umap_n_neighbors, min_dist=umap_min_dist)
+        reducer = umap.UMAP(n_components=2, n_neighbors=umap_n_neighbors, min_dist=umap_min_dist, metric=metric)
         reducer.fit(basis_data)
         for i in range(max_frames):
             projection = reducer.transform(embeddings_list[i])
@@ -388,11 +395,22 @@ def show_multiple_projections_with_slider(
     for p in projections_list:
         assert len(p) == n_frames, "All projection sets must have the same number of frames"
 
-    # Setup figure with dynamic subplots
-    fig, axes = plt.subplots(1, num_views, figsize=(figsize_per_plot[0] * num_views, figsize_per_plot[1]))
+    # === Layout calculation ===
+    if num_views <= 4:
+        nrows, ncols = 1, num_views
+    else:
+        ncols = math.ceil(math.sqrt(num_views))
+        nrows = math.ceil(num_views / ncols)
 
-    if num_views == 1:
-        axes = [axes]
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(figsize_per_plot[0] * ncols, figsize_per_plot[1] * nrows))
+    axes = np.array(axes).reshape(-1)  # Flatten in case it's a 2D grid
+
+    # Trim excess axes if more than needed
+    for ax in axes[num_views:]:
+        fig.delaxes(ax)
+
+    axes = axes[:num_views]
 
     # Precompute axis limits
     if shared_axes:
