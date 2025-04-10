@@ -14,7 +14,6 @@ def train_model_with_embedding_tracking(
         model,
         train_loader,
         test_loader,
-        test_subset_loader,
         device,
         epochs=10,
         learning_rate=0.001,
@@ -30,8 +29,18 @@ def train_model_with_embedding_tracking(
     train_losses, val_losses = [], []
     train_accuracies, val_accuracies = [], []
 
-    test_subset_embeddings = []
-    test_subset_labels = []
+    # Initialize logs
+    embedding_list = []
+    gradient_norms = []
+    max_gradients = []
+    grad_param_ratios = []
+    embedding_drift = []
+    embedding_direction_cos_sim = []
+    batch_counter = 0  # will track absolute batch index for x-axis
+    batch_indices = []
+
+    last_embedding = None
+    second_last_embedding = None
 
     # Place this outside your loop (once)
     backend = matplotlib.get_backend().lower()
@@ -54,42 +63,61 @@ def train_model_with_embedding_tracking(
             output, embedding = model(data, return_embedding=True)
             loss = criterion(output, target)
             loss.backward()
+
+            # === Gradient Norms ===
+            if embedding_mode == 'batch' and (batch_idx % batch_interval == 0):
+                total_norm = 0.0
+                max_grad = 0.0
+                ratios = []
+                for p in model.parameters():
+                    if p.grad is not None:
+                        grad = p.grad.detach()
+                        total_norm += grad.norm(2).item() ** 2
+                        max_grad = max(max_grad, grad.abs().max().item())
+                        if p.data.norm() > 0:
+                            ratios.append((grad.norm() / p.data.norm()).item())
+
+                gradient_norms.append(total_norm ** 0.5)
+                max_gradients.append(max_grad)
+                grad_param_ratios.append(np.mean(ratios))
+
             optimizer.step()
+
+            # === Embedding tracking ===
+            if embedding_mode == 'batch' and (batch_idx % batch_interval == 0):
+                batch_indices.append(batch_counter)
+                batch_counter += 1
+
+                emb = embedding.detach().cpu().numpy()
+                embedding_list.append(emb)
+
+                # Embedding Drift
+                if last_embedding is not None:
+                    drift = np.linalg.norm(emb - last_embedding, axis=1).mean()
+                    embedding_drift.append(drift)
+                else:
+                    embedding_drift.append(np.nan)
+
+                # Embedding Direction Cosine Similarity
+                if last_embedding is not None and second_last_embedding is not None:
+                    prev_vec = last_embedding - second_last_embedding
+                    curr_vec = emb - last_embedding
+                    num = np.sum(prev_vec * curr_vec)
+                    denom = np.linalg.norm(prev_vec) * np.linalg.norm(curr_vec) + 1e-8
+                    cos_sim = num / denom
+                    embedding_direction_cos_sim.append(cos_sim)
+                else:
+                    embedding_direction_cos_sim.append(np.nan)
+
+                # Update memory
+                second_last_embedding = last_embedding
+                last_embedding = emb
 
             # Training metrics
             epoch_train_loss += loss.item()
             _, preds = torch.max(output, dim=1)
             correct_train += (preds == target).sum().item()
             total_train += target.size(0)
-
-            # === Embedding tracking during training ===
-            if embedding_mode == 'batch' and (batch_idx % batch_interval == 0):
-                model.eval()
-                with torch.no_grad():
-                    batch_embeddings = []
-                    batch_labels = []
-                    for data_sub, target_sub in test_subset_loader:
-                        data_sub, target_sub = data_sub.to(device), target_sub.to(device)
-                        _, emb = model(data_sub, return_embedding=True)
-                        batch_embeddings.append(emb.cpu().numpy())
-                        batch_labels.append(target_sub.cpu().numpy())
-                    test_subset_embeddings.append(np.concatenate(batch_embeddings, axis=0))
-                    test_subset_labels.append(np.concatenate(batch_labels, axis=0))
-                model.train()
-
-        # === Embedding tracking once per epoch ===
-        if embedding_mode == 'epoch':
-            model.eval()
-            with torch.no_grad():
-                batch_embeddings = []
-                batch_labels = []
-                for data_sub, target_sub in test_subset_loader:
-                    data_sub, target_sub = data_sub.to(device), target_sub.to(device)
-                    _, emb = model(data_sub, return_embedding=True)
-                    batch_embeddings.append(emb.cpu().numpy())
-                    batch_labels.append(target_sub.cpu().numpy())
-                test_subset_embeddings.append(np.concatenate(batch_embeddings, axis=0))
-                test_subset_labels.append(np.concatenate(batch_labels, axis=0))
 
         # === Epoch-wise accuracy ===
         train_loss = epoch_train_loss / len(train_loader)
@@ -105,12 +133,16 @@ def train_model_with_embedding_tracking(
         with torch.no_grad():
             for data, target in test_loader:
                 data, target = data.to(device), target.to(device)
-                output, _ = model(data, return_embedding=True)
+                output, embedding = model(data, return_embedding=True)
                 loss = criterion(output, target)
                 epoch_val_loss += loss.item()
                 _, preds = torch.max(output, dim=1)
                 correct_val += (preds == target).sum().item()
                 total_val += target.size(0)
+
+                # === Embedding tracking ===
+                if embedding_mode == 'epoch':
+                    embedding_list.append(embedding.cpu().numpy())
 
         val_loss = epoch_val_loss / len(test_loader)
         val_acc = correct_val / total_val
@@ -118,26 +150,63 @@ def train_model_with_embedding_tracking(
         val_accuracies.append(val_acc)
 
         # === Live plot update ===
+        # Clear previous output
         clear_output(wait=True)
+
+        # === Create figure ===
+        fig, axs = plt.subplots(3, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [2, 2, 2]})
+
+        # === Top: Epoch-based loss & accuracy ===
+        axs[0].set_title("Loss & Accuracy per Epoch")
         epochs_range = range(1, epoch + 2)
-        fig, ax1 = plt.subplots(figsize=(8, 4))
-        ax1.plot(epochs_range, train_losses, 'b-', label='Train Loss')
-        ax1.plot(epochs_range, val_losses, 'r-', label='Val Loss')
-        ax1.set_xlabel('Epochs')
-        ax1.set_ylabel('Loss')
-        ax1.set_ylim(0, max(val_losses + train_losses))  # Fixed range for loss
-        ax1.set_xlim(1, epochs)  # Fixed x-axis
-        ax1.set_xticks(list(range(1, epochs + 1)))  # Integer ticks only
-        ax1.legend(loc='upper left')
+        axs[0].plot(epochs_range, train_losses, 'b-', label='Train Loss')
+        axs[0].plot(epochs_range, val_losses, 'r-', label='Val Loss')
+        axs[0].set_ylabel('Loss')
+        axs[0].legend(loc='upper left')
+        axs[0].set_xlim(1, epochs)  # Fixed x-axis
+        axs[0].set_ylim(0, max(val_losses + train_losses))  # Fixed range for loss
+        axs[0].set_xticks(list(range(1, epochs + 1)))  # Integer ticks only
 
-        ax2 = ax1.twinx()
-        ax2.plot(epochs_range, train_accuracies, 'g--', label='Train Acc')
-        ax2.plot(epochs_range, val_accuracies, 'orange', linestyle='--', label='Val Acc')
-        ax2.set_ylabel('Accuracy')
-        ax2.set_ylim(min(train_accuracies + val_accuracies), 1.0)  # Fixed range for accuracy
-        ax2.legend(loc='upper right')
+        ax0_twin = axs[0].twinx()
+        ax0_twin.plot(range(1, len(train_accuracies) + 1), train_accuracies, 'g--', label='Train Acc')
+        ax0_twin.plot(range(1, len(val_accuracies) + 1), val_accuracies, 'orange', linestyle='--', label='Val Acc')
+        ax0_twin.set_ylabel('Accuracy')
+        ax0_twin.set_ylim(min(train_accuracies + val_accuracies), 1.0)  # Fixed range for accuracy
+        ax0_twin.legend(loc='upper right')
 
-        plt.title("Training Loss and Accuracy")
+        # === Middle: Gradient-based diagnostics ===
+
+        axs[1].set_title("Per-Batch Metrics")
+        axs[1].plot(batch_indices, max_gradients, 'orange', label='Max Gradient', alpha=0.6)
+        axs[1].plot(batch_indices, grad_param_ratios, 'green', linestyle='--', label='Grad/Param Ratio', alpha=0.6)
+        axs[1].legend(loc='upper left')
+        axs[1].set_xlim(1, epochs * int(len(train_loader) / batch_interval + 1) + 1)  # Fixed x-axis
+
+        ax1_twin = axs[1].twinx()
+        ax1_twin.plot(batch_indices, gradient_norms, 'blue', label='Gradient Norm', alpha=0.8)
+        ax1_twin.set_ylabel('Gradient Norm')
+        ax1_twin.legend(loc='upper right')
+
+        axs[1].set_xlabel("Batch Record")
+        axs[1].set_ylabel("Gradient Value")
+        axs[1].legend()
+
+        # === Bottom: Embedding Development ===
+
+        axs[2].set_title("Per-Batch Metrics")
+        axs[2].plot(batch_indices, embedding_drift, label='Embedding Drift', alpha=0.7)
+        axs[2].legend(loc='upper left')
+        axs[2].set_xlim(1, epochs * int(len(train_loader) / batch_interval + 1) + 1)  # Fixed x-axis
+
+        ax2_twin = axs[2].twinx()
+        ax2_twin.plot(batch_indices, embedding_direction_cos_sim, 'red', label='Embedding Cos Sim', alpha=0.7)
+        ax2_twin.set_ylabel('Embedding Direction Cosine Similarity')
+        ax2_twin.legend(loc='upper right')
+
+        axs[2].set_xlabel("Batch Record")
+        axs[2].set_ylabel("Embedding Value")
+        axs[2].legend()
+
         plt.tight_layout()
         plt.show()
 
@@ -151,8 +220,8 @@ def train_model_with_embedding_tracking(
         print("\n".join(log_history))
 
     print(
-        f"Recorded {len(test_subset_embeddings)} embeddings in {epochs} epochs "
-        f"({len(test_subset_embeddings) / epochs:.2f} per epoch)."
+        f"Recorded {len(embedding_list)} embeddings in {epochs} epochs "
+        f"({len(embedding_list) / epochs:.2f} per epoch)."
     )
 
     return {
@@ -160,8 +229,7 @@ def train_model_with_embedding_tracking(
         'val_losses': val_losses,
         'train_accuracies': train_accuracies,
         'val_accuracies': val_accuracies,
-        'test_subset_embeddings': test_subset_embeddings,
-        'test_subset_labels': test_subset_labels
+        'embedding_list': embedding_list,
     }
 
 
