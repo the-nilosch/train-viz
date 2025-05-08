@@ -13,51 +13,38 @@ import ipywidgets as widgets
 from IPython.display import display
 
 def train_model_with_embedding_tracking(
-        model,
-        train_loader,
-        test_loader,
-        device,
-        epochs=10,
-        learning_rate=0.001,
-        embedding_mode='batch',  # 'batch' or 'epoch'
-        embedding_records_per_batch=10, # Only used if mode == 'batch'
-        average_window_size=10,
+    model, train_loader, test_loader, device,
+    epochs=10, learning_rate=0.001, embedding_records_per_batch=10,
+    average_window_size=10, track_gradients=True, track_embedding_drift=False,
+    track_cosine_similarity=False
 ):
-    num_batches = len(train_loader)
-    embedding_batch_interval = math.ceil(num_batches / embedding_records_per_batch)
-    print("Batch interval:", embedding_batch_interval)
-
-    # Determine reference shape before the training loop
-    first_batch = next(iter(train_loader))
-    reference_shape = first_batch[0].shape  # Only the data, not the labels
-    print(f"Reference shape: {reference_shape}")
-
-    logging.basicConfig(level=logging.INFO, force=True)
-    log_history = []
-
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     criterion = CrossEntropyLoss()
 
+    # Initialize lists for performance tracking
     train_losses, val_losses = [], []
     train_accuracies, val_accuracies = [], []
 
-    # Initialize logs
-    embedding_list = []
-    gradient_norms = []
-    max_gradients = []
-    grad_param_ratios = []
-    batch_counter = 0  # will track absolute batch index for x-axis
-    batch_indices = []
+    # Initialize lists for embedding snapshot
+    num_batches = len(train_loader)
+    embedding_batch_interval = math.ceil(num_batches / embedding_records_per_batch)
+    print(f"{num_batches} Batches, {embedding_records_per_batch} Records per Batch")
+    print("Resulting Batch interval:", embedding_batch_interval)
+    embedding_snapshots = []
+    embedding_indices = []
+    embedding_counter = 0
 
-    # Deques for memory
-    embedding_history = deque(maxlen=6)  # Store last 6 embeddings for drift calculations
-    cosine_history = deque(maxlen=2)
-
-    # Tracking lists
+    # Initialize lists for gradient tracking
+    gradient_norms, max_gradients, grad_param_ratios = [], [], []
     embedding_drifts = {i: [] for i in range(1, 6)}
-    embedding_direction_cos_sim = []
+    batch_indices = []
+    batch_counter = 0 # will track absolute batch index for x-axis
 
-    # Place this outside your loop (once)
+    # Logging setup
+    logging.basicConfig(level=logging.INFO, force=True)
+    log_history = []
+
+    # Visualization setup
     backend = matplotlib.get_backend().lower()
     if 'widget' in backend:
         fig, ax1 = plt.subplots(figsize=(8, 4))
@@ -67,87 +54,37 @@ def train_model_with_embedding_tracking(
 
     for epoch in range(epochs):
         model.train()
-        epoch_train_loss = 0
-        correct_train = 0
-        total_train = 0
+        epoch_train_loss, correct_train, total_train = 0, 0, 0
 
         for batch_idx, (data, target) in enumerate(train_loader):
             data, target = data.to(device), target.to(device)
-
             optimizer.zero_grad()
-            output, embedding = model(data, return_embedding=True)
+            output = model(data)
             loss = criterion(output, target)
             loss.backward()
+            # optimizer.step()
 
-            # === Gradient Norms ===
-            if embedding_mode == 'batch':
-                total_norm = 0.0
-                max_grad = 0.0
-                ratios = []
-                for p in model.parameters():
-                    if p.grad is not None:
-                        grad = p.grad.detach()
-                        total_norm += grad.norm(2).item() ** 2
-                        max_grad = max(max_grad, grad.abs().max().item())
-                        if p.data.norm() > 0:
-                            ratios.append((grad.norm() / p.data.norm()).item())
-
-                gradient_norms.append(total_norm ** 0.5)
+            # Gradient Tracking
+            if track_gradients:
+                grad_norm, max_grad, grad_ratio = _track_gradients(model)
+                gradient_norms.append(grad_norm)
                 max_gradients.append(max_grad)
-                grad_param_ratios.append(np.mean(ratios))
+                grad_param_ratios.append(grad_ratio)
+            batch_indices.append(batch_counter)
+            batch_counter += 1
 
             optimizer.step()
+
+            # Embedding Tracking
+
+            #if track_embedding_drift:
+                # Todo: Implement embedding tracking
 
             # Training metrics
             epoch_train_loss += loss.item()
             _, preds = torch.max(output, dim=1)
             correct_train += (preds == target).sum().item()
             total_train += target.size(0)
-
-            # === Embedding tracking ===
-            if embedding_mode != 'batch':
-                continue
-
-            batch_indices.append(batch_counter)
-            batch_counter += 1
-
-            # Record the embedding
-            emb = embedding.detach().cpu().numpy()
-
-            # Check if the shape matches the reference shape
-            if emb.shape[0] != reference_shape[0]:
-                print(f"Shape mismatch: {emb.shape[0]} != {reference_shape[0]}")
-                continue
-
-            # Append to history only if the shape matches
-            embedding_history.append(emb)
-
-            # Store embedding only at specific intervals
-            if batch_idx % embedding_batch_interval == 0:
-                embedding_list.append(emb)
-
-            # Embedding Drift Calculation
-            for skip in range(1, 6):
-                if len(embedding_history) > skip:
-                    # Calculate drift for each skip level
-                    drift = np.linalg.norm(embedding_history[-1] - embedding_history[-(skip + 1)], axis=1).mean()
-                    embedding_drifts[skip].append(drift)
-                else:
-                    embedding_drifts[skip].append(np.nan)
-
-            # Embedding Direction Cosine Similarity
-            if batch_idx % embedding_batch_interval == 0:
-                cosine_history.append(emb)
-                if len(cosine_history) >= 3:
-                    # Calculate Cosine Similarity
-                    prev_vec = cosine_history[-3] - cosine_history[-2]
-                    curr_vec = cosine_history[-2] - cosine_history[-1]
-                    num = np.sum(prev_vec * curr_vec)
-                    denom = np.linalg.norm(prev_vec) * np.linalg.norm(curr_vec) + 1e-8
-                    cos_sim = num / denom
-                    embedding_direction_cos_sim.append(cos_sim)
-                else:
-                    embedding_direction_cos_sim.append(np.nan)
 
         # === Epoch-wise accuracy ===
         train_loss = epoch_train_loss / len(train_loader)
@@ -157,9 +94,7 @@ def train_model_with_embedding_tracking(
 
         # === Validation phase ===
         model.eval()
-        epoch_val_loss = 0
-        correct_val = 0
-        total_val = 0
+        epoch_val_loss, correct_val, total_val = 0, 0, 0
         with torch.no_grad():
             for data, target in test_loader:
                 data, target = data.to(device), target.to(device)
@@ -171,113 +106,32 @@ def train_model_with_embedding_tracking(
                 total_val += target.size(0)
 
                 # === Embedding tracking ===
-                if embedding_mode == 'epoch':
-                    embedding_list.append(embedding.cpu().numpy())
+                embedding_snapshots.append(embedding.cpu().numpy())
 
         val_loss = epoch_val_loss / len(test_loader)
         val_acc = correct_val / total_val
         val_losses.append(val_loss)
         val_accuracies.append(val_acc)
 
-        # === Live plot update ===
-        # Clear previous output
-        clear_output(wait=True)
+        # Live plot update
+        fig, axs = _live_plot_update(track_gradients, track_embedding_drift, track_cosine_similarity)
+        _plot_loss_accuracy(axs[0], epoch, epochs, train_losses, val_losses, train_accuracies, val_accuracies)
 
-        # === Create figure ===
-        fig, axs = plt.subplots(4, 1, figsize=(12, 12), gridspec_kw={'height_ratios': [2, 2, 2, 2]})
-
-        # === Top: Epoch-based loss & accuracy ===
-        axs[0].set_title("Loss & Accuracy per Epoch")
-        epochs_range = range(1, epoch + 2)
-        axs[0].plot(epochs_range, train_losses, 'b-', label='Train Loss')
-        axs[0].plot(epochs_range, val_losses, 'r-', label='Val Loss')
-        axs[0].set_ylabel('Loss')
-        axs[0].legend(loc='upper left')
-        axs[0].set_xlim(1, epochs)  # Fixed x-axis
-        axs[0].set_ylim(0, max(val_losses + train_losses))  # Fixed range for loss
-        axs[0].set_xticks(list(range(1, epochs + 1)))  # Integer ticks only
-
-        ax0_twin = axs[0].twinx()
-        ax0_twin.plot(epochs_range, train_accuracies, 'g--', label='Train Acc')
-        ax0_twin.plot(epochs_range, val_accuracies, 'orange', linestyle='--', label='Val Acc')
-        ax0_twin.set_ylabel('Accuracy')
-        ax0_twin.set_ylim(min(train_accuracies + val_accuracies) * 0.9, 1.0)
-        ax0_twin.legend(loc='upper right')
-
-        def moving_average(data, window_size):
-            """Calculate the moving average with a specified window size."""
-            if len(data) < window_size:
-                return data  # Not enough data points to calculate the average
-            return np.convolve(data, np.ones(window_size) / window_size, mode='valid')
-
-        # === 2nd Plot: Gradient-based Metrics ===
-        axs[1].set_title("Per-Batch Gradient Metrics")
-
-        # Original, lighter lines
-        axs[1].plot(batch_indices, max_gradients, color='orange', label='Max Gradient', alpha=0.3)
-        axs[1].plot(batch_indices, grad_param_ratios, color='red', label='Grad/Param Ratio', alpha=0.3)
-
-        # Floating average lines
-        if len(batch_indices) >= average_window_size:
-            avg_indices = batch_indices[average_window_size - 1:]
-            axs[1].plot(avg_indices, moving_average(max_gradients, average_window_size), color='orange',
-                        label='Max Gradient (Avg)', alpha=0.8, linewidth=1.5)
-            axs[1].plot(avg_indices, moving_average(grad_param_ratios, average_window_size), color='red',
-                        label='Grad/Param Ratio (Avg)', alpha=0.8, linewidth=1.5)
-
-        axs[1].set_ylabel("Gradient Metrics")
-        axs[1].set_xlim(min(batch_indices), max(batch_indices))
-        axs[1].set_xlabel("Batch Record")
-        axs[1].legend(loc='upper left')
-
-        # Twin axis for Gradient Norm
-        ax1_twin = axs[1].twinx()
-        ax1_twin.plot(batch_indices, gradient_norms, color='blue', linestyle='--', label='Gradient Norm', alpha=0.3)
-
-        if len(batch_indices) >= average_window_size:
-            ax1_twin.plot(avg_indices, moving_average(gradient_norms, average_window_size), color='blue', linestyle='-',
-                          label='Gradient Norm (Avg)', alpha=0.8, linewidth=1.5)
-
-        ax1_twin.set_ylabel('Gradient Norm')
-        ax1_twin.legend(loc='lower right')
-
-        # === 3rd Plot: Embedding Drift ===
-        axs[2].set_title("Embedding Drift (Batch Interval)")
-        colors = ['green', 'blue', 'orange', 'red', 'purple']
-        labels = ['Drift 1', 'Drift 2', 'Drift 3', 'Drift 4', 'Drift 5']
-
-        for skip, color, label in zip(range(1, 6), colors, labels):
-            drift_data = embedding_drifts[skip]
-            if len(drift_data) > 0:
-                embedding_indices = range(1, len(drift_data) + 1)
-                axs[2].plot(embedding_indices, drift_data, color=color, alpha=0.3)
-
-                # Overlay moving average
-                if len(drift_data) >= average_window_size:
-                    avg_indices = range(average_window_size, len(drift_data) + 1)
-                    axs[2].plot(avg_indices, moving_average(drift_data, average_window_size), color=color,
-                                label=f'{label} (Avg)', alpha=0.8, linewidth=1.5)
-
-        axs[2].set_ylabel("Embedding Drift")
-        axs[2].set_xlim(1, max(batch_indices) if len(batch_indices) > 0 else 1)
-        axs[2].set_xlabel("Batch Record")
-        axs[2].legend(loc='upper left')
-
-        # === 4th Plot: Embedding Cosine Similarity (Embedding Interval) ===
-        embedding_indices = range(1, embedding_records_per_batch * epochs)
-
-        axs[3].set_title("Embedding Cosine Similarity (Embedding Interval)")
-        # axs[3].plot(embedding_indices, embedding_direction_cos_sim, 'red', linestyle='-', label='Cos Sim', alpha=0.7)
-        # axs[3].set_ylabel("Cosine Similarity")
-        # axs[3].set_xlim(1, max(embedding_indices))
-        # axs[3].set_ylim(-1.1, 1.1)  # Cosine similarity range is [-1, 1]
-        # axs[3].set_xlabel("Embedding Interval Record")
-        # axs[3].legend(loc='upper left')
+        pos = 1
+        if track_gradients:
+            _plot_gradients(axs[pos], batch_indices, gradient_norms, max_gradients, grad_param_ratios, average_window_size)
+            pos += 1
+        if track_embedding_drift:
+            _plot_embedding_drift(axs[pos], batch_indices, embedding_indices, embedding_snapshots)
+            pos += 1
+        if track_cosine_similarity:
+            # Todo: Implement cosine similarity tracking
+            pos += 1
 
         plt.tight_layout()
         plt.show()
 
-        # === Print summary ===
+        # Print summary
         log_line = (
             f"Epoch [{epoch + 1}/{epochs}] "
             f"| Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} "
@@ -287,8 +141,8 @@ def train_model_with_embedding_tracking(
         print("\n".join(log_history))
 
     print(
-        f"Recorded {len(embedding_list)} embeddings in {epochs} epochs "
-        f"({len(embedding_list) / epochs:.2f} per epoch)."
+        f"Recorded {len(embedding_snapshots)} embeddings in {epochs} epochs "
+        f"({len(embedding_snapshots) / epochs:.2f} per epoch)."
     )
 
     return {
@@ -296,9 +150,96 @@ def train_model_with_embedding_tracking(
         'val_losses': val_losses,
         'train_accuracies': train_accuracies,
         'val_accuracies': val_accuracies,
-        'embedding_list': embedding_list,
+        'embedding_list': embedding_snapshots,
     }
 
+def _live_plot_update(track_gradients=False, track_embedding_drift=False, track_cosine_similarity=False):
+    clear_output(wait=True)
+    num_figures = 1 + int(track_gradients) + int(track_embedding_drift) + int(track_cosine_similarity)
+    fig, axs = plt.subplots(num_figures, 1, figsize=(10, 10))
+    return fig, axs
+
+
+def _track_gradients(model):
+    """Tracks gradient norms and parameter ratios."""
+    total_norm = 0.0
+    max_grad = 0.0
+    ratios = []
+
+    for p in model.parameters():
+        if p.grad is not None:
+            grad = p.grad.detach()
+            total_norm += grad.norm(2).item() ** 2
+            max_grad = max(max_grad, grad.abs().max().item())
+            if p.data.norm() > 0:
+                ratios.append((grad.norm() / p.data.norm()).item())
+
+    return total_norm ** 0.5, max_grad, np.mean(ratios) if ratios else np.nan
+
+def _plot_loss_accuracy(ax, epoch, epochs, train_losses, val_losses, train_accuracies, val_accuracies):
+    """Plots loss and accuracy over epochs."""
+    ax.set_title("Loss & Accuracy per Epoch")
+    epochs_range = range(1, epoch + 2)
+    ax.plot(epochs_range, train_losses, 'b-', label='Train Loss', alpha=0.7)
+    ax.plot(epochs_range, val_losses, 'r-', label='Val Loss', alpha=0.7)
+    ax.set_ylabel('Loss')
+    ax.legend(loc='upper left')
+    ax.set_xlim(1, epochs)  # Fixed x-axis
+    ax.set_ylim(0, max(val_losses + train_losses))  # Fixed range for loss
+    ax.set_xticks(list(range(1, epochs + 1)))  # Integer ticks only
+
+    ax2 = ax.twinx()
+    ax2.plot(epochs_range, train_accuracies, 'g--', label='Train Acc', alpha=0.7)
+    ax2.plot(epochs_range, val_accuracies, 'orange', linestyle='--', label='Val Acc', alpha=0.7)
+    ax2.set_ylabel('Accuracy')
+    ax2.set_ylim(min(train_accuracies + val_accuracies) * 0.9, 1.0)
+    ax2.legend(loc='upper right')
+
+def _plot_gradients(ax, batch_indices, gradient_norms, max_gradients, grad_param_ratios, window_size):
+    """Plots gradient norms and ratios."""
+    ax.set_title("Gradient Metrics")
+    ax.plot(batch_indices, max_gradients, color='orange', label='Max Gradient', alpha=0.3)
+    ax.plot(batch_indices, grad_param_ratios, color='red', label='Grad/Param Ratio', alpha=0.3)
+
+    avg_indices = batch_indices[window_size - 1:]
+    if len(batch_indices) >= window_size:
+        ax.plot(avg_indices, _moving_average(max_gradients, window_size), color='orange',
+                label='Max Gradient (Avg)', alpha=0.8, linewidth=1.5)
+        ax.plot(avg_indices, _moving_average(grad_param_ratios, window_size), color='red',
+                label='Grad/Param Ratio (Avg)', alpha=0.8, linewidth=1.5)
+    ax.legend(loc='upper left')
+
+    ax2 = ax.twinx()
+    ax2.plot(batch_indices, gradient_norms, 'blue', linestyle='--', label='Gradient Norm', alpha=0.3)
+    if len(batch_indices) >= window_size:
+        ax2.plot(avg_indices, _moving_average(gradient_norms, window_size), color='blue', linestyle='-',
+                 label='Gradient Norm (Avg)', alpha=0.8, linewidth=1.5)
+    ax2.set_ylabel('Gradient Norm')
+    ax2.legend(loc='upper right')
+
+def _plot_embedding_drift(ax, batch_indices, embedding_drifts, window_size):
+    """Plots embedding drift."""
+    colors = ['green', 'blue', 'orange', 'red', 'purple']
+    labels = ['Drift 1', 'Drift 2', 'Drift 3', 'Drift 4', 'Drift 5']
+
+    for skip, color, label in zip(range(1, 6), colors, labels):
+        drift_data = embedding_drifts[skip]
+        if len(drift_data) > 0:
+            indices = range(1, len(drift_data) + 1)
+            ax.plot(indices, drift_data, color=color, alpha=0.2, linewidth=0.5)
+            if len(drift_data) >= window_size:
+                avg_indices = range(window_size, len(drift_data) + 1)
+                ax.plot(avg_indices, _moving_average(drift_data, window_size), color=color,
+                            label=f'{label} (Avg)', alpha=0.8, linewidth=1.5)
+    ax.set_ylabel("Embedding Drift")
+    ax.set_xlim(1, max(batch_indices) if len(batch_indices) > 0 else 1)
+    ax.legend(loc='upper left')
+
+def _moving_average(data, window_size):
+    """Calculate the moving average with a specified window size."""
+    if len(data) < window_size:
+        return data  # Not enough data points to calculate the average
+    return np.convolve(data, np.ones(window_size) / window_size, mode='valid')
 
 def generate_projections(
     embeddings_list,
