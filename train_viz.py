@@ -1,4 +1,6 @@
 import math
+from collections import deque
+from pprint import pprint
 
 import matplotlib
 import torch
@@ -18,8 +20,18 @@ def train_model_with_embedding_tracking(
         epochs=10,
         learning_rate=0.001,
         embedding_mode='batch',  # 'batch' or 'epoch'
-        batch_interval=10  # Only used if mode == 'batch'
+        embedding_records_per_batch=10, # Only used if mode == 'batch'
+        average_window_size=10,
 ):
+    num_batches = len(train_loader)
+    embedding_batch_interval = math.ceil(num_batches / embedding_records_per_batch)
+    print("Batch interval:", embedding_batch_interval)
+
+    # Determine reference shape before the training loop
+    first_batch = next(iter(train_loader))
+    reference_shape = first_batch[0].shape  # Only the data, not the labels
+    print(f"Reference shape: {reference_shape}")
+
     logging.basicConfig(level=logging.INFO, force=True)
     log_history = []
 
@@ -34,13 +46,16 @@ def train_model_with_embedding_tracking(
     gradient_norms = []
     max_gradients = []
     grad_param_ratios = []
-    embedding_drift = []
-    embedding_direction_cos_sim = []
     batch_counter = 0  # will track absolute batch index for x-axis
     batch_indices = []
 
-    last_embedding = None
-    second_last_embedding = None
+    # Deques for memory
+    embedding_history = deque(maxlen=6)  # Store last 6 embeddings for drift calculations
+    cosine_history = deque(maxlen=2)
+
+    # Tracking lists
+    embedding_drifts = {i: [] for i in range(1, 6)}
+    embedding_direction_cos_sim = []
 
     # Place this outside your loop (once)
     backend = matplotlib.get_backend().lower()
@@ -65,7 +80,7 @@ def train_model_with_embedding_tracking(
             loss.backward()
 
             # === Gradient Norms ===
-            if embedding_mode == 'batch' and (batch_idx % batch_interval == 0):
+            if embedding_mode == 'batch':
                 total_norm = 0.0
                 max_grad = 0.0
                 ratios = []
@@ -83,41 +98,56 @@ def train_model_with_embedding_tracking(
 
             optimizer.step()
 
-            # === Embedding tracking ===
-            if embedding_mode == 'batch' and (batch_idx % batch_interval == 0):
-                batch_indices.append(batch_counter)
-                batch_counter += 1
+            # Training metrics
+            epoch_train_loss += loss.item()
+            _, preds = torch.max(output, dim=1)
+            correct_train += (preds == target).sum().item()
+            total_train += target.size(0)
 
-                emb = embedding.detach().cpu().numpy()
+            # === Embedding tracking ===
+            if embedding_mode != 'batch':
+                continue
+
+            batch_indices.append(batch_counter)
+            batch_counter += 1
+
+            # Record the embedding
+            emb = embedding.detach().cpu().numpy()
+
+            # Check if the shape matches the reference shape
+            if emb.shape[0] != reference_shape[0]:
+                print(f"Shape mismatch: {emb.shape[0]} != {reference_shape[0]}")
+                continue
+
+            # Append to history only if the shape matches
+            embedding_history.append(emb)
+
+            # Store embedding only at specific intervals
+            if batch_idx % embedding_batch_interval == 0:
                 embedding_list.append(emb)
 
-                # Embedding Drift
-                if last_embedding is not None:
-                    drift = np.linalg.norm(emb - last_embedding, axis=1).mean()
-                    embedding_drift.append(drift)
+            # Embedding Drift Calculation
+            for skip in range(1, 6):
+                if len(embedding_history) > skip:
+                    # Calculate drift for each skip level
+                    drift = np.linalg.norm(embedding_history[-1] - embedding_history[-(skip + 1)], axis=1).mean()
+                    embedding_drifts[skip].append(drift)
                 else:
-                    embedding_drift.append(np.nan)
+                    embedding_drifts[skip].append(np.nan)
 
-                # Embedding Direction Cosine Similarity
-                if last_embedding is not None and second_last_embedding is not None:
-                    prev_vec = last_embedding - second_last_embedding
-                    curr_vec = emb - last_embedding
+            # Embedding Direction Cosine Similarity
+            if batch_idx % embedding_batch_interval == 0:
+                cosine_history.append(emb)
+                if len(cosine_history) >= 3:
+                    # Calculate Cosine Similarity
+                    prev_vec = cosine_history[-3] - cosine_history[-2]
+                    curr_vec = cosine_history[-2] - cosine_history[-1]
                     num = np.sum(prev_vec * curr_vec)
                     denom = np.linalg.norm(prev_vec) * np.linalg.norm(curr_vec) + 1e-8
                     cos_sim = num / denom
                     embedding_direction_cos_sim.append(cos_sim)
                 else:
                     embedding_direction_cos_sim.append(np.nan)
-
-                # Update memory
-                second_last_embedding = last_embedding
-                last_embedding = emb
-
-            # Training metrics
-            epoch_train_loss += loss.item()
-            _, preds = torch.max(output, dim=1)
-            correct_train += (preds == target).sum().item()
-            total_train += target.size(0)
 
         # === Epoch-wise accuracy ===
         train_loss = epoch_train_loss / len(train_loader)
@@ -154,7 +184,7 @@ def train_model_with_embedding_tracking(
         clear_output(wait=True)
 
         # === Create figure ===
-        fig, axs = plt.subplots(3, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [2, 2, 2]})
+        fig, axs = plt.subplots(4, 1, figsize=(12, 12), gridspec_kw={'height_ratios': [2, 2, 2, 2]})
 
         # === Top: Epoch-based loss & accuracy ===
         axs[0].set_title("Loss & Accuracy per Epoch")
@@ -168,44 +198,59 @@ def train_model_with_embedding_tracking(
         axs[0].set_xticks(list(range(1, epochs + 1)))  # Integer ticks only
 
         ax0_twin = axs[0].twinx()
-        ax0_twin.plot(range(1, len(train_accuracies) + 1), train_accuracies, 'g--', label='Train Acc')
-        ax0_twin.plot(range(1, len(val_accuracies) + 1), val_accuracies, 'orange', linestyle='--', label='Val Acc')
+        ax0_twin.plot(epochs_range, train_accuracies, 'g--', label='Train Acc')
+        ax0_twin.plot(epochs_range, val_accuracies, 'orange', linestyle='--', label='Val Acc')
         ax0_twin.set_ylabel('Accuracy')
-        ax0_twin.set_ylim(min(train_accuracies + val_accuracies), 1.0)  # Fixed range for accuracy
+        ax0_twin.set_ylim(min(train_accuracies + val_accuracies) * 0.9, 1.0)
         ax0_twin.legend(loc='upper right')
 
-        # === Middle: Gradient-based diagnostics ===
+        def moving_average(data, window_size):
+            """Calculate the moving average with a specified window size."""
+            if len(data) < window_size:
+                return data  # Not enough data points to calculate the average
+            return np.convolve(data, np.ones(window_size) / window_size, mode='valid')
 
-        axs[1].set_title("Per-Batch Metrics")
+        # === 2nd Plot: Gradient-based Metrics ===
+        axs[1].set_title("Per-Batch Gradient Metrics")
         axs[1].plot(batch_indices, max_gradients, 'orange', label='Max Gradient', alpha=0.6)
-        axs[1].plot(batch_indices, grad_param_ratios, 'green', linestyle='--', label='Grad/Param Ratio', alpha=0.6)
-        axs[1].legend(loc='upper left')
-        axs[1].set_xlim(1, epochs * int(len(train_loader) / batch_interval + 1) + 1)  # Fixed x-axis
-
-        ax1_twin = axs[1].twinx()
-        ax1_twin.plot(batch_indices, gradient_norms, 'blue', label='Gradient Norm', alpha=0.8)
-        ax1_twin.set_ylabel('Gradient Norm')
-        ax1_twin.legend(loc='upper right')
-
+        axs[1].plot(batch_indices, grad_param_ratios, 'red', label='Grad/Param Ratio', alpha=0.6)
+        axs[1].set_ylabel("Gradient Metrics")
+        axs[1].set_xlim(min(batch_indices), max(batch_indices))
         axs[1].set_xlabel("Batch Record")
-        axs[1].set_ylabel("Gradient Value")
-        axs[1].legend()
+        axs[1].legend(loc='upper left')
 
-        # === Bottom: Embedding Development ===
+        # Twin axis for Gradient Norm
+        ax1_twin = axs[1].twinx()
+        ax1_twin.plot(batch_indices, gradient_norms, 'blue', linestyle='--', label='Gradient Norm', alpha=0.8)
+        ax1_twin.set_ylabel('Gradient Norm')
+        ax1_twin.legend(loc='lower right')
 
-        axs[2].set_title("Per-Batch Metrics")
-        axs[2].plot(batch_indices, embedding_drift, label='Embedding Drift', alpha=0.7)
-        axs[2].legend(loc='upper left')
-        axs[2].set_xlim(1, epochs * int(len(train_loader) / batch_interval + 1) + 1)  # Fixed x-axis
+        # === 3rd Plot: Embedding Drift ===
+        axs[2].set_title("Embedding Drift (Batch Interval)")
+        colors = ['green', 'blue', 'orange', 'red', 'purple']
+        labels = ['Drift 1', 'Drift 2', 'Drift 3', 'Drift 4', 'Drift 5']
 
-        ax2_twin = axs[2].twinx()
-        ax2_twin.plot(batch_indices, embedding_direction_cos_sim, 'red', label='Embedding Cos Sim', alpha=0.7)
-        ax2_twin.set_ylabel('Embedding Direction Cosine Similarity')
-        ax2_twin.legend(loc='upper right')
+        for skip, color, label in zip(range(1, 6), colors, labels):
+            drift_data = embedding_drifts[skip]
+            if len(drift_data) > 0:
+                embedding_indices = range(1, len(drift_data) + 1)
+                axs[2].plot(embedding_indices, drift_data, color=color, label=label, alpha=0.7)
 
+        axs[2].set_ylabel("Embedding Drift")
+        axs[2].set_xlim(1, num_batches * epochs)
         axs[2].set_xlabel("Batch Record")
-        axs[2].set_ylabel("Embedding Value")
-        axs[2].legend()
+        axs[2].legend(loc='upper left')
+
+        # === 4th Plot: Embedding Cosine Similarity (Embedding Interval) ===
+        embedding_indices = range(1, embedding_records_per_batch * epochs)
+
+        axs[3].set_title("Embedding Cosine Similarity (Embedding Interval)")
+        # axs[3].plot(embedding_indices, embedding_direction_cos_sim, 'red', linestyle='-', label='Cos Sim', alpha=0.7)
+        # axs[3].set_ylabel("Cosine Similarity")
+        # axs[3].set_xlim(1, max(embedding_indices))
+        # axs[3].set_ylim(-1.1, 1.1)  # Cosine similarity range is [-1, 1]
+        # axs[3].set_xlabel("Embedding Interval Record")
+        # axs[3].legend(loc='upper left')
 
         plt.tight_layout()
         plt.show()
