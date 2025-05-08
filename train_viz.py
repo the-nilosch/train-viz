@@ -37,7 +37,6 @@ def train_model_with_embedding_tracking(
 
     # Initialize lists for gradient tracking
     gradient_norms, max_gradients, grad_param_ratios = [], [], []
-    embedding_drifts = {i: [] for i in range(1, 6)}
     batch_indices = []
     batch_counter = 0 # will track absolute batch index for x-axis
 
@@ -88,6 +87,9 @@ def train_model_with_embedding_tracking(
                         batch_labels.append(np.array([target_sub]))
                     embedding_snapshots.append(np.concatenate(batch_embeddings, axis=0))
                     embedding_snapshot_labels.append(np.concatenate(batch_labels, axis=0))
+
+                if track_embedding_drift:
+                    embedding_drifts = _calculate_embedding_drift(embedding_snapshots)
                 model.train()
                 embedding_indices.append(embedding_counter)
                 embedding_counter += 1
@@ -132,7 +134,7 @@ def train_model_with_embedding_tracking(
             _plot_gradients(axs[pos], batch_indices, gradient_norms, max_gradients, grad_param_ratios, average_window_size)
             pos += 1
         if track_embedding_drift:
-            _plot_embedding_drift(axs[pos], batch_indices, embedding_indices, embedding_snapshots)
+            _plot_embedding_drift(axs[pos], embedding_drifts)
             pos += 1
         if track_cosine_similarity:
             # Todo: Implement cosine similarity tracking
@@ -186,6 +188,31 @@ def _track_gradients(model):
 
     return total_norm ** 0.5, max_grad, np.mean(ratios) if ratios else np.nan
 
+def _calculate_embedding_drift(embedding_snapshots, max_skip=5):
+    """
+    Calculate embedding drift based on the snapshots.
+    Drift is calculated as the mean Euclidean distance between snapshots.
+    """
+    drifts = {i: [] for i in range(1, max_skip + 1)}
+
+    # Iterate over all snapshots
+    for i in range(1, len(embedding_snapshots)):
+        current_snapshot = embedding_snapshots[i]
+
+        # Compare with previous snapshots
+        for skip in range(1, max_skip + 1):
+            if i - skip >= 0:
+                previous_snapshot = embedding_snapshots[i - skip]
+
+                # Calculate Euclidean distance
+                drift = np.linalg.norm(current_snapshot - previous_snapshot, axis=1).mean()
+                drifts[skip].append(drift)
+            else:
+                # Not enough snapshots to calculate this skip level
+                drifts[skip].append(np.nan)
+
+    return drifts
+
 def _plot_loss_accuracy(ax, epoch, epochs, train_losses, val_losses, train_accuracies, val_accuracies):
     """Plots loss and accuracy over epochs."""
     ax.set_title("Loss & Accuracy per Epoch")
@@ -227,7 +254,7 @@ def _plot_gradients(ax, batch_indices, gradient_norms, max_gradients, grad_param
     ax2.set_ylabel('Gradient Norm')
     ax2.legend(loc='upper right')
 
-def _plot_embedding_drift(ax, batch_indices, embedding_drifts, window_size):
+def _plot_embedding_drift(ax, embedding_drifts):
     """Plots embedding drift."""
     colors = ['green', 'blue', 'orange', 'red', 'purple']
     labels = ['Drift 1', 'Drift 2', 'Drift 3', 'Drift 4', 'Drift 5']
@@ -236,13 +263,11 @@ def _plot_embedding_drift(ax, batch_indices, embedding_drifts, window_size):
         drift_data = embedding_drifts[skip]
         if len(drift_data) > 0:
             indices = range(1, len(drift_data) + 1)
-            ax.plot(indices, drift_data, color=color, alpha=0.2, linewidth=0.5)
-            if len(drift_data) >= window_size:
-                avg_indices = range(window_size, len(drift_data) + 1)
-                ax.plot(avg_indices, _moving_average(drift_data, window_size), color=color,
-                            label=f'{label} (Avg)', alpha=0.8, linewidth=1.5)
-    ax.set_ylabel("Embedding Drift")
-    ax.set_xlim(1, max(batch_indices) if len(batch_indices) > 0 else 1)
+            ax.plot(indices, drift_data, color=color, label=label, alpha=0.7)
+
+    ax.set_title("Embedding Drift")
+    ax.set_ylabel("Drift Distance")
+    ax.set_xlabel("Snapshot Index")
     ax.legend(loc='upper left')
 
 def _moving_average(data, window_size):
