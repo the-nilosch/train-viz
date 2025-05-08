@@ -212,8 +212,19 @@ def train_model_with_embedding_tracking(
 
         # === 2nd Plot: Gradient-based Metrics ===
         axs[1].set_title("Per-Batch Gradient Metrics")
-        axs[1].plot(batch_indices, max_gradients, 'orange', label='Max Gradient', alpha=0.6)
-        axs[1].plot(batch_indices, grad_param_ratios, 'red', label='Grad/Param Ratio', alpha=0.6)
+
+        # Original, lighter lines
+        axs[1].plot(batch_indices, max_gradients, color='orange', label='Max Gradient', alpha=0.3)
+        axs[1].plot(batch_indices, grad_param_ratios, color='red', label='Grad/Param Ratio', alpha=0.3)
+
+        # Floating average lines
+        if len(batch_indices) >= average_window_size:
+            avg_indices = batch_indices[average_window_size - 1:]
+            axs[1].plot(avg_indices, moving_average(max_gradients, average_window_size), color='orange',
+                        label='Max Gradient (Avg)', alpha=0.8, linewidth=1.5)
+            axs[1].plot(avg_indices, moving_average(grad_param_ratios, average_window_size), color='red',
+                        label='Grad/Param Ratio (Avg)', alpha=0.8, linewidth=1.5)
+
         axs[1].set_ylabel("Gradient Metrics")
         axs[1].set_xlim(min(batch_indices), max(batch_indices))
         axs[1].set_xlabel("Batch Record")
@@ -221,7 +232,12 @@ def train_model_with_embedding_tracking(
 
         # Twin axis for Gradient Norm
         ax1_twin = axs[1].twinx()
-        ax1_twin.plot(batch_indices, gradient_norms, 'blue', linestyle='--', label='Gradient Norm', alpha=0.8)
+        ax1_twin.plot(batch_indices, gradient_norms, color='blue', linestyle='--', label='Gradient Norm', alpha=0.3)
+
+        if len(batch_indices) >= average_window_size:
+            ax1_twin.plot(avg_indices, moving_average(gradient_norms, average_window_size), color='blue', linestyle='-',
+                          label='Gradient Norm (Avg)', alpha=0.8, linewidth=1.5)
+
         ax1_twin.set_ylabel('Gradient Norm')
         ax1_twin.legend(loc='lower right')
 
@@ -234,10 +250,16 @@ def train_model_with_embedding_tracking(
             drift_data = embedding_drifts[skip]
             if len(drift_data) > 0:
                 embedding_indices = range(1, len(drift_data) + 1)
-                axs[2].plot(embedding_indices, drift_data, color=color, label=label, alpha=0.7)
+                axs[2].plot(embedding_indices, drift_data, color=color, alpha=0.3)
+
+                # Overlay moving average
+                if len(drift_data) >= average_window_size:
+                    avg_indices = range(average_window_size, len(drift_data) + 1)
+                    axs[2].plot(avg_indices, moving_average(drift_data, average_window_size), color=color,
+                                label=f'{label} (Avg)', alpha=0.8, linewidth=1.5)
 
         axs[2].set_ylabel("Embedding Drift")
-        axs[2].set_xlim(1, num_batches * epochs)
+        axs[2].set_xlim(1, max(batch_indices) if len(batch_indices) > 0 else 1)
         axs[2].set_xlabel("Batch Record")
         axs[2].legend(loc='upper left')
 
