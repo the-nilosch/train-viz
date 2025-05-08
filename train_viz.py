@@ -13,8 +13,8 @@ import ipywidgets as widgets
 from IPython.display import display
 
 def train_model_with_embedding_tracking(
-    model, train_loader, test_loader, device,
-    epochs=10, learning_rate=0.001, embedding_records_per_batch=10,
+    model, train_loader, test_loader, subset_loader, device,
+    epochs=10, learning_rate=0.001, embedding_records_per_epoch=10,
     average_window_size=10, track_gradients=True, track_embedding_drift=False,
     track_cosine_similarity=False
 ):
@@ -27,10 +27,11 @@ def train_model_with_embedding_tracking(
 
     # Initialize lists for embedding snapshot
     num_batches = len(train_loader)
-    embedding_batch_interval = math.ceil(num_batches / embedding_records_per_batch)
-    print(f"{num_batches} Batches, {embedding_records_per_batch} Records per Batch")
+    embedding_batch_interval = math.ceil(num_batches / embedding_records_per_epoch)
+    print(f"{num_batches} Batches, {embedding_records_per_epoch} Records per Epoch")
     print("Resulting Batch interval:", embedding_batch_interval)
     embedding_snapshots = []
+    embedding_snapshot_labels = []
     embedding_indices = []
     embedding_counter = 0
 
@@ -76,9 +77,21 @@ def train_model_with_embedding_tracking(
             optimizer.step()
 
             # Embedding Tracking
+            if batch_idx % embedding_batch_interval == 0:
+                model.eval()
+                with torch.no_grad():
+                    batch_embeddings, batch_labels = [], []
+                    for data_sub, target_sub in subset_loader:
+                        data_sub = data_sub.to(device)
+                        _, emb = model(data_sub, return_embedding=True)
+                        batch_embeddings.append(emb.cpu().numpy())
+                        batch_labels.append(np.array([target_sub]))
+                    embedding_snapshots.append(np.concatenate(batch_embeddings, axis=0))
+                    embedding_snapshot_labels.append(np.concatenate(batch_labels, axis=0))
+                model.train()
+                embedding_indices.append(embedding_counter)
+                embedding_counter += 1
 
-            #if track_embedding_drift:
-                # Todo: Implement embedding tracking
 
             # Training metrics
             epoch_train_loss += loss.item()
@@ -104,9 +117,6 @@ def train_model_with_embedding_tracking(
                 _, preds = torch.max(output, dim=1)
                 correct_val += (preds == target).sum().item()
                 total_val += target.size(0)
-
-                # === Embedding tracking ===
-                embedding_snapshots.append(embedding.cpu().numpy())
 
         val_loss = epoch_val_loss / len(test_loader)
         val_acc = correct_val / total_val
@@ -150,7 +160,8 @@ def train_model_with_embedding_tracking(
         'val_losses': val_losses,
         'train_accuracies': train_accuracies,
         'val_accuracies': val_accuracies,
-        'embedding_list': embedding_snapshots,
+        'subset_embeddings': embedding_snapshots,
+        'subset_labels': embedding_snapshot_labels,
     }
 
 def _live_plot_update(track_gradients=False, track_embedding_drift=False, track_cosine_similarity=False):
@@ -158,7 +169,6 @@ def _live_plot_update(track_gradients=False, track_embedding_drift=False, track_
     num_figures = 1 + int(track_gradients) + int(track_embedding_drift) + int(track_cosine_similarity)
     fig, axs = plt.subplots(num_figures, 1, figsize=(10, 10))
     return fig, axs
-
 
 def _track_gradients(model):
     """Tracks gradient norms and parameter ratios."""
