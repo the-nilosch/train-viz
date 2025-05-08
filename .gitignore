@@ -175,3 +175,7 @@ cython_debug/
 
 # Project Visualizations
 visualizations/
+
+# Project Specific
+data/
+.idea/
