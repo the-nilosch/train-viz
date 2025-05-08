@@ -164,12 +164,13 @@ def train_model_with_embedding_tracking(
         'val_accuracies': val_accuracies,
         'subset_embeddings': embedding_snapshots,
         'subset_labels': embedding_snapshot_labels,
+        'embedding_drifts': embedding_drifts,
     }
 
 def _live_plot_update(track_gradients=False, track_embedding_drift=False, track_cosine_similarity=False):
     clear_output(wait=True)
     num_figures = 1 + int(track_gradients) + int(track_embedding_drift) + int(track_cosine_similarity)
-    fig, axs = plt.subplots(num_figures, 1, figsize=(10, 10))
+    fig, axs = plt.subplots(num_figures, 2, figsize=(10, 10))
     return fig, axs
 
 def _track_gradients(model):
