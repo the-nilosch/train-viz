@@ -84,7 +84,7 @@ def train_model_with_embedding_tracking(
                         data_sub = data_sub.to(device)
                         _, emb = model(data_sub, return_embedding=True)
                         batch_embeddings.append(emb.cpu().numpy())
-                        batch_labels.append(np.array([target_sub]))
+                        batch_labels.append(np.array(target_sub.flatten()))
                     embedding_snapshots.append(np.concatenate(batch_embeddings, axis=0))
                     embedding_snapshot_labels.append(np.concatenate(batch_labels, axis=0))
 
@@ -167,11 +167,12 @@ def train_model_with_embedding_tracking(
         'embedding_drifts': embedding_drifts,
     }
 
-def _live_plot_update(track_gradients=False, track_embedding_drift=False, track_cosine_similarity=False):
+def _live_plot_update(track_gradients=False, track_embedding_drift=False, track_cosine_similarity=False, ncols=2):
     clear_output(wait=True)
     num_figures = 1 + int(track_gradients) + int(track_embedding_drift) + int(track_cosine_similarity)
-    fig, axs = plt.subplots(num_figures, 2, figsize=(10, 10))
-    return fig, axs
+    nrows = math.ceil(num_figures / ncols)
+    fig, axs = plt.subplots(nrows, ncols, figsize=(10, 4*nrows))
+    return fig, axs.flatten()
 
 def _track_gradients(model):
     """Tracks gradient norms and parameter ratios."""
@@ -255,7 +256,61 @@ def _plot_gradients(ax, batch_indices, gradient_norms, max_gradients, grad_param
     ax2.set_ylabel('Gradient Norm')
     ax2.legend(loc='upper right')
 
-def _plot_embedding_drift(ax, embedding_drifts):
+
+from scipy.stats import pearsonr
+
+
+def visualization_drift_vs_embedding_drift(projections, embedding_drifts):
+    """
+    Visualizes the drift of embeddings and calculates the correlation
+    between visualization drift and embedding drift for each data series.
+
+    Args:
+        projections (list of np.ndarray): Low-dimensional projections (e.g., t-SNE or UMAP).
+        embedding_drifts (list of np.ndarray): High-dimensional embedding drift values, one for each data series.
+
+    Returns:
+        float: Mean correlation between visualization drift and embedding drift across all data series.
+    """
+    embedding_drifts = embedding_drifts.copy()
+    # Use the existing function to calculate visualization drift
+    visualization_drifts = _calculate_embedding_drift(projections)
+
+    # Ensure embedding_drifts and visualization_drifts have the same length
+    assert len(embedding_drifts) == len(visualization_drifts), "Mismatch in drift lengths."
+
+    # Calculate correlation per data series and store in a list
+    correlations = []
+    for i in range(1, len(embedding_drifts)):
+        emb_drift = np.asarray(embedding_drifts[i]).flatten()
+        vis_drift = np.asarray(visualization_drifts[i]).flatten()
+
+        # Check if lengths match
+        assert len(emb_drift) == len(vis_drift), f"Mismatch in series {i}: {len(emb_drift)} vs {len(vis_drift)}"
+
+        valid_mask = ~np.isnan(emb_drift) & ~np.isnan(vis_drift)
+        emb_drift = emb_drift[valid_mask]
+        vis_drift = vis_drift[valid_mask]
+
+        # Calculate Pearson correlation
+        correlation, _ = pearsonr(emb_drift, vis_drift)
+        correlations.append(correlation)
+        print(f"Series {i} - Correlation: {correlation:.4f}")
+
+    # Calculate and print mean correlation
+    mean_correlation = np.mean(correlations)
+    print(f"Mean Correlation: {mean_correlation:.4f}")
+
+    fig, axs = plt.subplots(1, 2, figsize=(10, 3))
+    _plot_embedding_drift(axs[0], visualization_drifts, title="Visualization Drift")
+    _plot_embedding_drift(axs[1], embedding_drifts)
+
+    plt.legend()
+    plt.show()
+
+    return mean_correlation
+
+def _plot_embedding_drift(ax, embedding_drifts, title="Embedding Drift"):
     """Plots embedding drift."""
     colors = ['green', 'blue', 'orange', 'red', 'purple']
     labels = ['Drift 1', 'Drift 2', 'Drift 3', 'Drift 4', 'Drift 5']
@@ -266,7 +321,7 @@ def _plot_embedding_drift(ax, embedding_drifts):
             indices = range(1, len(drift_data) + 1)
             ax.plot(indices, drift_data, color=color, label=label, alpha=0.7)
 
-    ax.set_title("Embedding Drift")
+    ax.set_title(title)
     ax.set_ylabel("Drift Distance")
     ax.set_xlabel("Snapshot Index")
     ax.legend(loc='upper left')
@@ -338,10 +393,16 @@ def generate_projections(
 
     elif method == 'umap':
         reducer = umap.UMAP(n_components=2, n_neighbors=umap_n_neighbors, min_dist=umap_min_dist, metric=metric)
-        reducer.fit(basis_data)
-        for i in range(max_frames):
-            projection = reducer.transform(embeddings_list[i])
-            projections.append(projection)
+        if reverse_computation:
+            for i in range(max_frames - 1, -1, -1):
+                reducer.fit(embeddings_list[i])
+                projection = reducer.transform(embeddings_list[i])
+                projections.insert(0, projection)
+        else:
+            reducer.fit(basis_data)
+            for i in range(max_frames):
+                projection = reducer.transform(embeddings_list[i])
+                projections.append(projection)
 
 #     elif method == 'umap':
 #         init_2d = 'pca'
