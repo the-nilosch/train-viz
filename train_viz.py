@@ -11,15 +11,16 @@ from IPython.display import clear_output
 import logging
 import ipywidgets as widgets
 from IPython.display import display
+import torch.nn.functional as F
 
 def train_model_with_embedding_tracking(
-    model, train_loader, test_loader, subset_loader, device,
+    model, train_loader, test_loader, subset_loader, device, num_classes,
     epochs=10, learning_rate=0.001, embedding_records_per_epoch=10,
     average_window_size=10, track_gradients=True, track_embedding_drift=False,
     track_cosine_similarity=False
 ):
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    criterion = CrossEntropyLoss()
+    criterion = torch.nn.BCEWithLogitsLoss()
 
     # Initialize lists for performance tracking
     train_losses, val_losses = [], []
@@ -58,6 +59,8 @@ def train_model_with_embedding_tracking(
 
         for batch_idx, (data, target) in enumerate(train_loader):
             data, target = data.to(device), target.to(device)
+            target = F.one_hot(target, num_classes=num_classes).float()
+
             optimizer.zero_grad()
             output = model(data)
             loss = criterion(output, target)
@@ -98,7 +101,7 @@ def train_model_with_embedding_tracking(
             # Training metrics
             epoch_train_loss += loss.item()
             _, preds = torch.max(output, dim=1)
-            correct_train += (preds == target).sum().item()
+            correct_train += (preds == target.argmax(dim=1)).sum().item()
             total_train += target.size(0)
 
         # === Epoch-wise accuracy ===
@@ -113,11 +116,12 @@ def train_model_with_embedding_tracking(
         with torch.no_grad():
             for data, target in test_loader:
                 data, target = data.to(device), target.to(device)
+                target = F.one_hot(target, num_classes=num_classes).float()
                 output, embedding = model(data, return_embedding=True)
                 loss = criterion(output, target)
                 epoch_val_loss += loss.item()
                 _, preds = torch.max(output, dim=1)
-                correct_val += (preds == target).sum().item()
+                correct_val += (preds == target.argmax(dim=1)).sum().item()
                 total_val += target.size(0)
 
         val_loss = epoch_val_loss / len(test_loader)
