@@ -65,7 +65,6 @@ def train_model_with_embedding_tracking(
             output = model(data)
             loss = criterion(output, target)
             loss.backward()
-            # optimizer.step()
 
             # Gradient Tracking
             if track_gradients:
@@ -169,6 +168,9 @@ def train_model_with_embedding_tracking(
         'subset_embeddings': embedding_snapshots,
         'subset_labels': embedding_snapshot_labels,
         'embedding_drifts': embedding_drifts,
+        'gradient_norms': gradient_norms,
+        'max_gradients': max_gradients,
+        'grad_param_ratios': grad_param_ratios,
     }
 
 def _live_plot_update(track_gradients=False, track_embedding_drift=False, track_cosine_similarity=False, ncols=2):

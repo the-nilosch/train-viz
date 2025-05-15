@@ -99,6 +99,7 @@ def init_mlp_for_dataset(dataset_name, hidden_dim=128):
 class MLP(nn.Module):
     def __init__(self, hidden_dim=128, input_size=784, num_classes=10):
         super(MLP, self).__init__()
+        self.emb_dim = hidden_dim
         self.fc1 = nn.Linear(input_size, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, num_classes)
 
@@ -129,6 +130,7 @@ def init_cnn_for_dataset(dataset_name, hidden_dim=128):
 class CNN(nn.Module):
     def __init__(self, hidden_dim=128, conv1_out_channels=32, conv2_out_channels=64, num_classes=10, input_channels=1):
         super(CNN, self).__init__()
+        self.emb_dim = hidden_dim
         self.conv1 = nn.Conv2d(input_channels, conv1_out_channels, kernel_size=3, stride=1, padding=1)
         self.conv2 = nn.Conv2d(conv1_out_channels, conv2_out_channels, kernel_size=3, stride=1, padding=1)
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
