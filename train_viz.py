@@ -13,11 +13,12 @@ import ipywidgets as widgets
 from IPython.display import display
 import torch.nn.functional as F
 
+
 def train_model_with_embedding_tracking(
     model, train_loader, test_loader, subset_loader, device, num_classes,
     epochs=10, learning_rate=0.001, embedding_records_per_epoch=10,
     average_window_size=10, track_gradients=True, track_embedding_drift=False,
-    track_cosine_similarity=False
+    track_cosine_similarity=False, early_stopping=True, patience=4,
 ):
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     criterion = torch.nn.BCEWithLogitsLoss()
@@ -29,8 +30,7 @@ def train_model_with_embedding_tracking(
     # Initialize lists for embedding snapshot
     num_batches = len(train_loader)
     embedding_batch_interval = math.ceil(num_batches / embedding_records_per_epoch)
-    print(f"{num_batches} Batches, {embedding_records_per_epoch} Records per Epoch")
-    print("Resulting Batch interval:", embedding_batch_interval)
+    print(f"{num_batches} Batches, {embedding_records_per_epoch} Records per Epoch, Resulting Batch interval: {embedding_batch_interval}")
     embedding_snapshots = []
     embedding_snapshot_labels = []
     embedding_indices = []
@@ -52,6 +52,10 @@ def train_model_with_embedding_tracking(
         ax2 = ax1.twinx()
     else:
         fig = ax1 = ax2 = None  # placeholder
+
+    # Early stopping setup
+    best_loss = float('inf')
+    patience_counter = 0
 
     for epoch in range(epochs):
         model.train()
@@ -154,6 +158,20 @@ def train_model_with_embedding_tracking(
         )
         log_history.append(log_line)
         print("\n".join(log_history))
+
+        # Early stopping
+        if val_loss < best_loss:
+            best_loss = val_loss
+            patience_counter = 0
+            print(f"New best validation loss: {best_loss:.4f}")
+        else:
+            patience_counter += 1
+            print(f"No improvement for {patience_counter} epochs")
+
+        # Check if patience limit reached
+        if early_stopping & patience_counter >= patience:
+            print(f"Early stopping triggered at epoch {epoch + 1}")
+            break
 
     print(
         f"Recorded {len(embedding_snapshots)} embeddings in {epochs} epochs "
