@@ -214,27 +214,26 @@ def _track_gradients(model):
 
     return total_norm ** 0.5, max_grad, np.mean(ratios) if ratios else np.nan
 
-def _calculate_embedding_drift(embedding_snapshots, max_skip=5):
+def _calculate_embedding_drift(embedding_snapshots, max_power=5):
     """
     Calculate embedding drift based on the snapshots.
     Drift is calculated as the mean Euclidean distance between snapshots.
+    Uses skip steps as powers of 2 (i.e., 1, 2, 4, 8, ...).
     """
-    drifts = {i: [] for i in range(1, max_skip + 1)}
+    drifts = {2**n: [] for n in range(max_power)}
 
     # Iterate over all snapshots
     for i in range(1, len(embedding_snapshots)):
         current_snapshot = embedding_snapshots[i]
 
-        # Compare with previous snapshots
-        for skip in range(1, max_skip + 1):
+        # Compare with previous snapshots using 2^n steps
+        for n in range(max_power):
+            skip = 2**n
             if i - skip >= 0:
                 previous_snapshot = embedding_snapshots[i - skip]
-
-                # Calculate Euclidean distance
                 drift = np.linalg.norm(current_snapshot - previous_snapshot, axis=1).mean()
                 drifts[skip].append(drift)
             else:
-                # Not enough snapshots to calculate this skip level
                 drifts[skip].append(np.nan)
 
     return drifts
@@ -305,7 +304,7 @@ def visualization_drift_vs_embedding_drift(projections, embedding_drifts):
 
     # Calculate correlation per data series and store in a list
     correlations = []
-    for i in range(1, len(embedding_drifts)):
+    for i in embedding_drifts.keys():
         emb_drift = np.asarray(embedding_drifts[i]).flatten()
         vis_drift = np.asarray(visualization_drifts[i]).flatten()
 
@@ -337,9 +336,9 @@ def visualization_drift_vs_embedding_drift(projections, embedding_drifts):
 def _plot_embedding_drift(ax, embedding_drifts, title="Embedding Drift"):
     """Plots embedding drift."""
     colors = ['green', 'blue', 'orange', 'red', 'purple']
-    labels = ['Drift 1', 'Drift 2', 'Drift 3', 'Drift 4', 'Drift 5']
+    labels = ['Drift 1', 'Drift 2', 'Drift 4', 'Drift 8', 'Drift 16']
 
-    for skip, color, label in zip(range(1, 6), colors, labels):
+    for skip, color, label in zip(embedding_drifts.keys(), colors, labels):
         drift_data = embedding_drifts[skip]
         if len(drift_data) > 0:
             indices = range(1, len(drift_data) + 1)
