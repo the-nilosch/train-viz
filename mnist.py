@@ -152,7 +152,7 @@ class CNN(nn.Module):
             return out, h
         return out
 
-def init_vit_for_dataset(dataset_name, emb_dim=128, depth=6, num_heads=4, mlp_dim=256):
+def init_vit_for_dataset(dataset_name, emb_dim=128, depth=6, num_heads=4, mlp_dim=256, dropout=0.1):
     if dataset_name == "mnist":
         img_size = 28
         num_classes = 10
@@ -178,6 +178,7 @@ def init_vit_for_dataset(dataset_name, emb_dim=128, depth=6, num_heads=4, mlp_di
         emb_dim=emb_dim,
         depth=depth,
         num_heads=num_heads,
-        mlp_dim=mlp_dim
+        mlp_dim=mlp_dim,
+        dropout=dropout,
     )
     return model

@@ -19,10 +19,14 @@ class PatchEmbedding(nn.Module):
         return x
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, emb_dim=128, num_heads=4, depth=6, mlp_dim=256):
+    def __init__(self, emb_dim=128, num_heads=4, depth=6, mlp_dim=256, dropout=0.1):
         super().__init__()
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=emb_dim, nhead=num_heads, dim_feedforward=mlp_dim, batch_first=True
+            d_model=emb_dim,
+            nhead=num_heads,
+            dim_feedforward=mlp_dim,
+            dropout=dropout,
+            batch_first=True
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=depth)
 
@@ -30,17 +34,18 @@ class TransformerEncoder(nn.Module):
         return self.transformer(x)
 
 class ViT(nn.Module):
-    def __init__(self, img_size=32, patch_size=4, num_classes=10, emb_dim=128, depth=6, num_heads=4, mlp_dim=256):
+    def __init__(self, img_size=32, patch_size=4, num_classes=10, emb_dim=128, depth=6, num_heads=4, mlp_dim=256, dropout=0.1):
         super().__init__()
         self.patch_embed = PatchEmbedding(img_size, patch_size, emb_dim)
-        self.transformer_encoder = TransformerEncoder(emb_dim, num_heads, depth, mlp_dim)
+        self.transformer_encoder = TransformerEncoder(emb_dim, num_heads, depth, mlp_dim, dropout)
         self.head = nn.Linear(emb_dim, num_classes)
 
     def forward(self, x, return_embedding=False):
         x = self.patch_embed(x)
         x = self.transformer_encoder(x)
-        cls_token_embedding = x[:, 0]  # Use class token embedding
+        cls_token_embedding = x[:, 0]
         out = self.head(cls_token_embedding)
         if return_embedding:
             return out, cls_token_embedding
         return out
+
