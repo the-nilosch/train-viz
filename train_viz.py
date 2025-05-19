@@ -470,6 +470,37 @@ def generate_projections(
     return projections
 
 
+def denoise_projections(projections, window_size=5, blend=0.5):
+    """
+    Denoises the projections to ensure smoother movement by averaging each point's position
+    based on its surrounding positions within a window.
+
+    Args:
+        projections (list of np.ndarray): Low-dimensional projections.
+        window_size (int): Number of prior and following positions to consider for averaging.
+        blend (float): Blend factor (0 = original, 1 = fully averaged).
+
+    Returns:
+        list of np.ndarray: Denoised projections.
+    """
+    denoised_projections = []
+    num_frames = len(projections)
+
+    for i in range(num_frames):
+        # Determine window bounds
+        start_idx = max(0, i - window_size)
+        end_idx = min(num_frames, i + window_size + 1)
+
+        # Extract window frames and calculate average
+        window_frames = projections[start_idx:end_idx]
+        avg_frame = np.mean(window_frames, axis=0)
+
+        # Blend original and averaged frame
+        denoised_frame = (1 - blend) * projections[i] + blend * avg_frame
+        denoised_projections.append(denoised_frame)
+
+    return denoised_projections
+
 def animate_projections(
     projections,
     labels,
