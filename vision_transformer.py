@@ -10,6 +10,9 @@ class PatchEmbedding(nn.Module):
         self.cls_token = nn.Parameter(torch.randn(1, 1, emb_dim))
         self.pos_embedding = nn.Parameter(torch.randn(1, self.num_patches + 1, emb_dim))
 
+        nn.init.trunc_normal_(self.pos_embedding, std=0.02)
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
+
     def forward(self, x):
         B = x.shape[0]
         x = self.projection(x).flatten(2).transpose(1, 2)  # [B, num_patches, emb_dim]
