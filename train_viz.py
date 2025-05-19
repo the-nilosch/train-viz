@@ -378,7 +378,7 @@ def generate_projections(
     import numpy as np
 
     assert method in ['tsne', 'pca', 'umap']
-    assert pca_fit_basis in ['first', 'last', 'all', 'last_visualized']
+    assert pca_fit_basis in ['first', 'last', 'all', 'last_visualized', 'window', int]
 
     projections = []
     max_frames = max_frames or len(embeddings_list)
@@ -394,32 +394,53 @@ def generate_projections(
         basis_data = embeddings_list[max_frames - 1]
     elif pca_fit_basis == 'all':
         basis_data = np.concatenate(embeddings_list, axis=0)
+    elif pca_fit_basis == 'window':
+        basis_data = embeddings_list[0]
     else:
         raise ValueError(f"Invalid pca_fit_basis: {pca_fit_basis}")
 
-    if method == 'pca':
-        reducer = PCA(n_components=2)
+    if method == 'pca' and pca_fit_basis == 'window':
+        prev_components = None
+        for i in range(max_frames):
+            window_start = max(0, i - window_size + 1)
+            window_data = np.concatenate(embeddings_list[window_start:i+1], axis=0)
+            reducer = PCA(n_components=out_dim)
+            reducer.fit(window_data)
+
+            # Flip correction
+            if prev_components is not None:
+                for j in range(out_dim):
+                    dot_product = np.dot(reducer.components_[j], prev_components[j])
+                    if dot_product < 0:
+                        reducer.components_[j] *= -1
+
+            prev_components = reducer.components_.copy()
+
+            projections.append(reducer.transform(embeddings_list[i]))
+
+    elif method == 'pca':
+        reducer = PCA(n_components=out_dim)
         reducer.fit(basis_data)
         for i in range(max_frames):
             projections.append(reducer.transform(embeddings_list[i]))
 
     elif method == 'tsne':
-        tsne = TSNE(n_components=2, init=tsne_init, perplexity=tsne_perplexity, random_state=random_state, metric=metric)
+        tsne = TSNE(n_components=out_dim, init=tsne_init, perplexity=tsne_perplexity, random_state=random_state, metric=metric)
         tsne.fit(basis_data)
         if reverse_computation:
             projections = [None] * max_frames
             projections[-1] = tsne.fit_transform(embeddings_list[max_frames - 1])
             for i in range(max_frames - 2, -1, -1):
-                tsne = TSNE(n_components=2, init=projections[i + 1], perplexity=tsne_perplexity, random_state=random_state, metric=metric)
+                tsne = TSNE(n_components=out_dim, init=projections[i + 1], perplexity=tsne_perplexity, random_state=random_state, metric=metric)
                 projections[i] = tsne.fit_transform(embeddings_list[i])
         else:
             projections.append(tsne.fit_transform(embeddings_list[0]))
             for i in range(1, max_frames):
-                tsne = TSNE(n_components=2, init=projections[-1], perplexity=tsne_perplexity, random_state=random_state, metric=metric)
+                tsne = TSNE(n_components=out_dim, init=projections[-1], perplexity=tsne_perplexity, random_state=random_state, metric=metric)
                 projections.append(tsne.fit_transform(embeddings_list[i]))
 
     elif method == 'umap':
-        reducer = umap.UMAP(n_components=2, n_neighbors=umap_n_neighbors, min_dist=umap_min_dist, metric=metric)
+        reducer = umap.UMAP(n_components=out_dim, n_neighbors=umap_n_neighbors, min_dist=umap_min_dist, metric=metric)
         if reverse_computation:
             for i in range(max_frames - 1, -1, -1):
                 reducer.fit(embeddings_list[i])
