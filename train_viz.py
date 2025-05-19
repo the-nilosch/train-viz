@@ -169,8 +169,10 @@ def train_model_with_embedding_tracking(
             print(f"No improvement for {patience_counter} epochs")
 
         # Check if patience limit reached
-        if early_stopping & patience_counter >= patience:
-            print(f"Early stopping triggered at epoch {epoch + 1}")
+        if early_stopping and patience_counter >= patience:
+            log_line=f"Early stopping triggered at epoch {epoch + 1}"
+            log_history.append(log_line)
+            print(log_line)
             break
 
     print(
@@ -246,9 +248,9 @@ def _plot_loss_accuracy(ax, epoch, epochs, train_losses, val_losses, train_accur
     ax.plot(epochs_range, val_losses, 'r-', label='Val Loss', alpha=0.7)
     ax.set_ylabel('Loss')
     ax.legend(loc='upper left')
-    ax.set_xlim(1, epochs)  # Fixed x-axis
+    #ax.set_xlim(1, epochs)  # Fixed x-axis
     ax.set_ylim(0, max(val_losses + train_losses))  # Fixed range for loss
-    ax.set_xticks(list(range(1, epochs + 1)))  # Integer ticks only
+    #ax.set_xticks(list(range(1, epochs + 1)))  # Integer ticks only
 
     ax2 = ax.twinx()
     ax2.plot(epochs_range, train_accuracies, 'g--', label='Train Acc', alpha=0.7)
@@ -367,6 +369,8 @@ def generate_projections(
     umap_n_neighbors=15,
     umap_min_dist=0.1,
     metric='euclidean', # for umap and tsne
+    window_size=10,
+    out_dim=2 #2D vs 3D
 ):
     from sklearn.decomposition import PCA
     from sklearn.manifold import TSNE

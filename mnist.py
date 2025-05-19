@@ -81,7 +81,7 @@ def cifar100_init_dataset():
     return train_data, test_data
 
 
-def init_mlp_for_dataset(dataset_name, hidden_dim=128):
+def init_mlp_for_dataset(dataset_name, hidden_dims=[128, 64], dropout=0.2):
     if dataset_name == "mnist":
         input_size = 28 * 28  # MNIST image size
         num_classes = 10
@@ -94,23 +94,32 @@ def init_mlp_for_dataset(dataset_name, hidden_dim=128):
     else:
         raise ValueError(f"Unsupported dataset: {dataset_name}")
 
-    return MLP(hidden_dim=hidden_dim, input_size=input_size, num_classes=num_classes)
+    return MLP(hidden_dims=hidden_dims, input_size=input_size, num_classes=num_classes, dropout=dropout)
 
 class MLP(nn.Module):
-    def __init__(self, hidden_dim=128, input_size=784, num_classes=10):
+    def __init__(self, hidden_dims=[128, 64], input_size=784, num_classes=10, dropout=0.2):
         super(MLP, self).__init__()
-        self.emb_dim = hidden_dim
-        self.fc1 = nn.Linear(input_size, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, num_classes)
+        self.emb_dim = hidden_dims[-1]
+
+        layers = []
+        prev_dim = input_size
+        for dim in hidden_dims:
+            layers.append(nn.Linear(prev_dim, dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout))  # Add dropout here
+            prev_dim = dim
+
+        self.feature_extractor = nn.Sequential(*layers)
+        self.head = nn.Linear(prev_dim, num_classes)
 
     def forward(self, x, return_embedding=False):
-        # Flatten the input for the fully connected layer
         x = x.view(x.size(0), -1)
-        h = F.relu(self.fc1(x))
-        out = self.fc2(h)
+        h = self.feature_extractor(x)
+        out = self.head(h)
         if return_embedding:
             return out, h
         return out
+
 
 def init_cnn_for_dataset(dataset_name, hidden_dim=128):
     if dataset_name == "mnist":
