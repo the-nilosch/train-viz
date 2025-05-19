@@ -85,7 +85,9 @@ def load_training_data(run_id):
             elif isinstance(obj, h5py.Group):
                 # Handle groups as lists of datasets
                 group_data = []
-                for key in obj:
+                # Sort keys as integers
+                sorted_keys = sorted(obj.keys(), key=lambda x: int(x) if x.isdigit() else x)
+                for key in sorted_keys:
                     group_data.append(np.array(obj[key]))
                 data[name] = group_data
 
