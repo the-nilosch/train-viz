@@ -18,10 +18,10 @@ def train_model_with_embedding_tracking(
     model, train_loader, test_loader, subset_loader, device, num_classes,
     epochs=10, learning_rate=0.001, embedding_records_per_epoch=10,
     average_window_size=10, track_gradients=True, track_embedding_drift=False,
-    track_cosine_similarity=False, early_stopping=True, patience=4,
+    track_cosine_similarity=False, early_stopping=True, patience=4, weight_decay=0.05,
 ):
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    criterion = torch.nn.BCEWithLogitsLoss()
+    assert model.__class__.__name__ in ['ViT', 'CNN', 'MLP'], "Model must be ViT, CNN, or MLP"
+    optimizer, scheduler, criterion = _setup_training(model, learning_rate, epochs, weight_decay)
 
     # Initialize lists for performance tracking
     train_losses, val_losses = [], []
@@ -31,14 +31,11 @@ def train_model_with_embedding_tracking(
     num_batches = len(train_loader)
     embedding_batch_interval = math.ceil(num_batches / embedding_records_per_epoch)
     print(f"{num_batches} Batches, {embedding_records_per_epoch} Records per Epoch, Resulting Batch interval: {embedding_batch_interval}")
-    embedding_snapshots = []
-    embedding_snapshot_labels = []
-    embedding_indices = []
+    embedding_snapshots, embedding_snapshot_labels, embedding_indices = [], [], []
     embedding_counter = 0
 
     # Initialize lists for gradient tracking
-    gradient_norms, max_gradients, grad_param_ratios = [], [], []
-    batch_indices = []
+    gradient_norms, max_gradients, grad_param_ratios, batch_indices = [], [], [], []
     batch_counter = 0 # will track absolute batch index for x-axis
 
     # Logging setup
@@ -63,7 +60,6 @@ def train_model_with_embedding_tracking(
 
         for batch_idx, (data, target) in enumerate(train_loader):
             data, target = data.to(device), target.to(device)
-            target = F.one_hot(target, num_classes=num_classes).float()
 
             optimizer.zero_grad()
             output = model(data)
@@ -104,7 +100,7 @@ def train_model_with_embedding_tracking(
             # Training metrics
             epoch_train_loss += loss.item()
             _, preds = torch.max(output, dim=1)
-            correct_train += (preds == target.argmax(dim=1)).sum().item()
+            correct_train += (preds == target).sum().item()
             total_train += target.size(0)
 
         # === Epoch-wise accuracy ===
@@ -119,18 +115,20 @@ def train_model_with_embedding_tracking(
         with torch.no_grad():
             for data, target in test_loader:
                 data, target = data.to(device), target.to(device)
-                target = F.one_hot(target, num_classes=num_classes).float()
                 output, embedding = model(data, return_embedding=True)
                 loss = criterion(output, target)
                 epoch_val_loss += loss.item()
                 _, preds = torch.max(output, dim=1)
-                correct_val += (preds == target.argmax(dim=1)).sum().item()
+                correct_val += (preds == target).sum().item()
                 total_val += target.size(0)
 
         val_loss = epoch_val_loss / len(test_loader)
         val_acc = correct_val / total_val
         val_losses.append(val_loss)
         val_accuracies.append(val_acc)
+
+        if scheduler is not None:
+            scheduler.step()
 
         # Live plot update
         fig, axs = _live_plot_update(track_gradients, track_embedding_drift, track_cosine_similarity)
@@ -192,6 +190,22 @@ def train_model_with_embedding_tracking(
         'max_gradients': max_gradients,
         'grad_param_ratios': grad_param_ratios,
     }
+
+def _setup_training(model, learning_rate, epochs, weight_decay):
+    assert model.__class__.__name__ in ['ViT', 'CNN', 'MLP'], "Model must be ViT, CNN, or MLP"
+
+    if model.__class__.__name__ == 'MLP':
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+    elif model.__class__.__name__ == 'CNN':
+        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    elif model.__class__.__name__ == 'ViT':
+        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+
+    criterion = CrossEntropyLoss()
+    return optimizer, scheduler, criterion
 
 def _live_plot_update(track_gradients=False, track_embedding_drift=False, track_cosine_similarity=False, ncols=2):
     clear_output(wait=True)
