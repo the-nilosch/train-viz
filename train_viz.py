@@ -6,6 +6,7 @@ import matplotlib
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 from torch.nn import CrossEntropyLoss
 from IPython.display import clear_output
 import logging
@@ -13,12 +14,13 @@ import ipywidgets as widgets
 from IPython.display import display
 import torch.nn.functional as F
 
+marker_styles = ['o', 's', '^', 'v', '<', '>', 'P', '*', 'X', 'D']
 
 def train_model_with_embedding_tracking(
     model, train_loader, test_loader, subset_loader, device, num_classes,
-    epochs=10, learning_rate=0.001, embedding_records_per_epoch=10,
-    average_window_size=10, track_gradients=True, track_embedding_drift=False,
-    track_cosine_similarity=False, early_stopping=True, patience=4, weight_decay=0.05,
+    epochs=10, learning_rate=0.001, embedding_records_per_epoch=10, average_window_size=10,
+    track_gradients=True, track_embedding_drift=True, track_cosine_similarity=False, track_scheduled_lr=False,
+    track_pca=False, early_stopping=True, patience=4, weight_decay=0.05,
 ):
     assert model.__class__.__name__ in ['ViT', 'CNN', 'MLP'], "Model must be ViT, CNN, or MLP"
     optimizer, scheduler, criterion = _setup_training(model, learning_rate, epochs, weight_decay)
@@ -26,6 +28,7 @@ def train_model_with_embedding_tracking(
     # Initialize lists for performance tracking
     train_losses, val_losses = [], []
     train_accuracies, val_accuracies = [], []
+    scheduler_history = []
 
     # Initialize lists for embedding snapshot
     num_batches = len(train_loader)
@@ -43,6 +46,8 @@ def train_model_with_embedding_tracking(
     log_history = []
 
     # Visualization setup
+    num_figures = 1 + int(track_gradients) + int(track_embedding_drift) + int(track_cosine_similarity) + int(
+        track_pca) + int(track_scheduled_lr)
     backend = matplotlib.get_backend().lower()
     if 'widget' in backend:
         fig, ax1 = plt.subplots(figsize=(8, 4))
@@ -67,13 +72,13 @@ def train_model_with_embedding_tracking(
             loss.backward()
 
             # Gradient Tracking
-            if track_gradients:
+            if track_gradients and (batch_idx % int(embedding_batch_interval/average_window_size) == 0):
                 grad_norm, max_grad, grad_ratio = _track_gradients(model)
                 gradient_norms.append(grad_norm)
                 max_gradients.append(max_grad)
                 grad_param_ratios.append(grad_ratio)
-            batch_indices.append(batch_counter)
-            batch_counter += 1
+                batch_indices.append(batch_counter)
+                batch_counter += 1
 
             optimizer.step()
 
@@ -129,17 +134,24 @@ def train_model_with_embedding_tracking(
 
         if scheduler is not None:
             scheduler.step()
+            scheduler_history.append(scheduler.get_last_lr())
 
         # Live plot update
-        fig, axs = _live_plot_update(track_gradients, track_embedding_drift, track_cosine_similarity)
+        fig, axs = _live_plot_update(num_figures=num_figures)
         _plot_loss_accuracy(axs[0], epoch, epochs, train_losses, val_losses, train_accuracies, val_accuracies)
 
         pos = 1
         if track_gradients:
             _plot_gradients(axs[pos], batch_indices, gradient_norms, max_gradients, grad_param_ratios, average_window_size)
             pos += 1
+        if track_scheduled_lr and scheduler is not None:
+            _plot_scheduled_lr(axs[pos], scheduler_history)
+            pos += 1
         if track_embedding_drift:
             _plot_embedding_drift(axs[pos], embedding_drifts)
+            pos += 1
+        if track_pca:
+            _plot_pca(axs[pos], embedding_snapshots, embedding_snapshot_labels, embedding_records_per_epoch, num_classes=num_classes)
             pos += 1
         if track_cosine_similarity:
             # Todo: Implement cosine similarity tracking
@@ -207,9 +219,9 @@ def _setup_training(model, learning_rate, epochs, weight_decay):
     criterion = CrossEntropyLoss()
     return optimizer, scheduler, criterion
 
-def _live_plot_update(track_gradients=False, track_embedding_drift=False, track_cosine_similarity=False, ncols=2):
+def _live_plot_update(num_figures=1, ncols=2):
+    plt.close('all')
     clear_output(wait=True)
-    num_figures = 1 + int(track_gradients) + int(track_embedding_drift) + int(track_cosine_similarity)
     nrows = math.ceil(num_figures / ncols)
     fig, axs = plt.subplots(nrows, ncols, figsize=(10, 4*nrows))
     return fig, axs.flatten()
@@ -270,7 +282,7 @@ def _plot_loss_accuracy(ax, epoch, epochs, train_losses, val_losses, train_accur
     ax2.plot(epochs_range, train_accuracies, 'g--', label='Train Acc', alpha=0.7)
     ax2.plot(epochs_range, val_accuracies, 'orange', linestyle='--', label='Val Acc', alpha=0.7)
     ax2.set_ylabel('Accuracy')
-    ax2.set_ylim(min(train_accuracies + val_accuracies) * 0.9, 1.0)
+    ax2.set_ylim(min(min(train_accuracies), min(val_accuracies)) * 0.9, 1.0)
     ax2.legend(loc='upper right')
 
 def _plot_gradients(ax, batch_indices, gradient_norms, max_gradients, grad_param_ratios, window_size):
@@ -298,20 +310,62 @@ def _plot_gradients(ax, batch_indices, gradient_norms, max_gradients, grad_param
 
 from scipy.stats import pearsonr
 
+def _plot_scheduled_lr(ax, scheduler_history):
+    ax.plot(scheduler_history, label='Learning Rate')
+    ax.set_title("Learning Rate Schedule")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Learning Rate")
 
-def visualization_drift_vs_embedding_drift(projections, embedding_drifts):
+def _plot_pca(ax, embedding_snapshots, embedding_snapshot_labels, embedding_records_per_epoch, out_dim=2, num_classes=10, size=10):
+    """Plots the PCA of the embeddings in the last epoch."""
+    from sklearn.decomposition import PCA
+
+    window_data = np.concatenate(embedding_snapshots[-embedding_records_per_epoch:], axis=0)
+    reducer = PCA(n_components=out_dim)
+    reducer.fit(window_data)
+
+    projection = reducer.transform(embedding_snapshots[-1])
+
+    # Scatter Plot of projection
+    labels = embedding_snapshot_labels[-1]
+    if num_classes <= 10:
+        cmap = 'tab10'
+        ax.scatter(projection[:, 0], projection[:, 1],
+                   c=labels, cmap=cmap, alpha=0.7, s=size)
+    else:
+        cmap = plt.get_cmap('nipy_spectral', num_classes)
+        for i in range(num_classes):
+            idx = labels == i
+            marker = marker_styles[i % len(marker_styles)]
+            color = cmap(i / num_classes)
+
+            ax.scatter(projection[idx, 0], projection[idx, 1],
+                       c=[color], marker=marker, label=str(i),
+                       alpha=0.7, edgecolors='none', s=size)
+
+def visualization_drift_vs_embedding_drift(projections, embedding_drifts, verbose=True, embeddings=False):
     """
-    Visualizes the drift of embeddings and calculates the correlation
-    between visualization drift and embedding drift for each data series.
+    Visualizes the drift of embeddings and computes the Pearson correlation between
+    visualization drift and high-dimensional embedding drift for each data series.
 
     Args:
-        projections (list of np.ndarray): Low-dimensional projections (e.g., t-SNE or UMAP).
-        embedding_drifts (list of np.ndarray): High-dimensional embedding drift values, one for each data series.
+        projections (list of np.ndarray): Low-dimensional projections generated using
+            dimensionality reduction techniques (e.g., t-SNE or UMAP).
+        embedding_drifts (dict): Dictionary of high-dimensional embedding drift values,
+            where each key represents a skip step (e.g., 1, 2, 4, ...) and each value is an
+            array of drift measurements.
+        verbose (bool): If True, prints the correlation values for each series and the mean correlation.
+        embeddings (bool): If True, compute the embedding drift per each series.
 
     Returns:
-        float: Mean correlation between visualization drift and embedding drift across all data series.
+        float: Mean Pearson correlation between visualization drift and embedding drift
+            across all data series.
     """
-    embedding_drifts = embedding_drifts.copy()
+    if embeddings:
+        embedding_drifts = _calculate_embedding_drift(embedding_drifts)
+    else:
+        embedding_drifts = embedding_drifts.copy()
+
     # Use the existing function to calculate visualization drift
     visualization_drifts = _calculate_embedding_drift(projections)
 
@@ -334,18 +388,20 @@ def visualization_drift_vs_embedding_drift(projections, embedding_drifts):
         # Calculate Pearson correlation
         correlation, _ = pearsonr(emb_drift, vis_drift)
         correlations.append(correlation)
-        print(f"Series {i} - Correlation: {correlation:.4f}")
+        if verbose:
+            print(f"Series {i} - Correlation: {correlation:.4f}")
 
     # Calculate and print mean correlation
     mean_correlation = np.mean(correlations)
-    print(f"Mean Correlation: {mean_correlation:.4f}")
+    if verbose:
+        print(f"Mean Correlation: {mean_correlation:.4f}")
 
-    fig, axs = plt.subplots(1, 2, figsize=(10, 3))
-    _plot_embedding_drift(axs[0], visualization_drifts, title="Visualization Drift")
-    _plot_embedding_drift(axs[1], embedding_drifts)
+        fig, axs = plt.subplots(1, 2, figsize=(10, 3))
+        _plot_embedding_drift(axs[0], visualization_drifts, title="Visualization Drift")
+        _plot_embedding_drift(axs[1], embedding_drifts)
 
-    plt.legend()
-    plt.show()
+        plt.legend()
+        plt.show()
 
     return mean_correlation
 
@@ -414,7 +470,11 @@ def generate_projections(
         raise ValueError(f"Invalid pca_fit_basis: {pca_fit_basis}")
 
     if method == 'pca' and pca_fit_basis == 'window':
+        from scipy.linalg import orthogonal_procrustes
+
         prev_components = None
+        prev_projection = None
+
         for i in range(max_frames):
             window_start = max(0, i - window_size + 1)
             window_data = np.concatenate(embeddings_list[window_start:i+1], axis=0)
@@ -424,13 +484,20 @@ def generate_projections(
             # Flip correction
             if prev_components is not None:
                 for j in range(out_dim):
-                    dot_product = np.dot(reducer.components_[j], prev_components[j])
-                    if dot_product < 0:
+                    if np.dot(reducer.components_[j], prev_components[j]) < 0:
                         reducer.components_[j] *= -1
 
-            prev_components = reducer.components_.copy()
+            # Transform and align the projection
+            projection = reducer.transform(embeddings_list[i])
 
-            projections.append(reducer.transform(embeddings_list[i]))
+            if prev_projection is not None:
+                # Align projection using Procrustes (orthogonal) alignment
+                R, _ = orthogonal_procrustes(projection, prev_projection)
+                projection = projection @ R
+
+            projections.append(projection)
+            prev_components = reducer.components_.copy()
+            prev_projection = projection.copy()
 
     elif method == 'pca':
         reducer = PCA(n_components=out_dim)
@@ -466,52 +533,40 @@ def generate_projections(
                 projection = reducer.transform(embeddings_list[i])
                 projections.append(projection)
 
-#     elif method == 'umap':
-#         init_2d = 'pca'
-#         for i in range(max_frames):
-#             prev_emb = embeddings_list[i - 1] if i > 0 else embeddings_list[i]
-#             next_emb = embeddings_list[i + 1] if i < len(embeddings_list) - 1 else embeddings_list[i]
-#             curr_emb = embeddings_list[i]
-#             fit_data = np.concatenate([prev_emb, curr_emb, next_emb], axis=0)
-#
-#             reducer = umap.UMAP(n_components=2, init=init_2d)
-#             reducer.fit(fit_data)
-#             projection = reducer.transform(curr_emb)
-#
-#             projections.append(projection)
-#             init_2d = projection  # use current as init for next
-
     return projections
 
 
-def denoise_projections(projections, window_size=5, blend=0.5):
+def denoise_projections(projections, blend=0.5, window_size=5, mode='window'):
     """
-    Denoises the projections to ensure smoother movement by averaging each point's position
-    based on its surrounding positions within a window.
+    Smooths projections using either causal or window-based blending.
 
     Args:
-        projections (list of np.ndarray): Low-dimensional projections.
-        window_size (int): Number of prior and following positions to consider for averaging.
-        blend (float): Blend factor (0 = original, 1 = fully averaged).
+        projections (list of np.ndarray): List of (n_samples, n_dims) arrays over time.
+        blend (float): Blend factor (0 = original, 1 = fully smoothed).
+        window_size (int): Number of steps for averaging (only used in 'window' mode).
+        mode (str): 'exponential' (blend with previous) or 'window' (blend with surrounding).
 
     Returns:
-        list of np.ndarray: Denoised projections.
+        list of np.ndarray: Smoothed projections.
     """
-    denoised_projections = []
+    assert 0 <= blend <= 1, "Blend must be in [0, 1]"
+    assert mode in ['exponential', 'window'], "Mode must be 'causal' or 'window'"
+
     num_frames = len(projections)
+    denoised_projections = []
 
     for i in range(num_frames):
-        # Determine window bounds
-        start_idx = max(0, i - window_size)
-        end_idx = min(num_frames, i + window_size + 1)
+        if mode == 'exponential' and i > 0:
+            ref = denoised_projections[-1]
+        elif mode == 'window':
+            start = max(0, i - window_size)
+            end = min(num_frames, i + 1)
+            ref = np.mean(projections[start:end], axis=0)
+        else:
+            ref = projections[i]  # fallback for first frame in 'exponential' mode
 
-        # Extract window frames and calculate average
-        window_frames = projections[start_idx:end_idx]
-        avg_frame = np.mean(window_frames, axis=0)
-
-        # Blend original and averaged frame
-        denoised_frame = (1 - blend) * projections[i] + blend * avg_frame
-        denoised_projections.append(denoised_frame)
+        blended = (1 - blend) * projections[i] + blend * ref
+        denoised_projections.append(blended)
 
     return denoised_projections
 
@@ -613,6 +668,16 @@ def show_with_slider(
     scatter = ax.scatter(projections[0][:, 0], projections[0][:, 1],
                          c=labels[0], cmap=cmap, s=dot_size, alpha=alpha)
 
+    # Add legend
+    unique_labels = np.unique(labels[0])
+    cmap_instance = plt.get_cmap(cmap, len(unique_labels))
+    handles = [plt.Line2D([0], [0], marker='o', color='w',
+                          label=str(lbl),
+                          markerfacecolor=cmap_instance(i),
+                          markersize=6)
+               for i, lbl in enumerate(unique_labels)]
+    ax.legend(handles=handles, title="Classes", bbox_to_anchor=(1.05, 1), loc='upper left')
+
     # Slider and update
     def update(frame_idx):
         scatter.set_offsets(projections[frame_idx])
@@ -625,6 +690,7 @@ def show_with_slider(
 
     out = widgets.interactive_output(update, {'frame_idx': slider_control})
     display(widgets.VBox([widgets.HBox([slider, slider_control]), out]))
+
 
 
 def show_multiple_projections_with_slider(
@@ -720,3 +786,48 @@ def show_multiple_projections_with_slider(
 
     out = widgets.interactive_output(update, {'frame_idx': slider_control})
     display(widgets.VBox([widgets.HBox([slider, slider_control]), out]))
+
+
+def adjust_visualization_speed(projections, embedding_drifts, drift_key):
+    """
+    Adjusts the visualization movement speed iteratively to align with the maximum movement of a specified drift.
+
+    Args:
+        projections (list of np.ndarray): Low-dimensional projections.
+        embedding_drifts (dict of np.ndarray): High-dimensional embedding drift values.
+        target_drift_key (str): Key in embedding_drifts to use as the reference for speed adjustment.
+
+    Returns:
+        list of np.ndarray: Adjusted projections with aligned speed.
+    """
+    # Extract the target drift
+    target_drift = np.asarray(embedding_drifts[drift_key]).flatten()
+    scaling_difference = np.median(
+        _calculate_embedding_drift(projections)[drift_key][drift_key - 1:] / embedding_drifts[drift_key][
+                                                                             drift_key - 1:])
+    print(f"Scaling difference: {scaling_difference}")
+
+    # Apply scaling iteratively
+    adjusted_projections = projections[0:drift_key]  # Start with the first projection as-is
+    changes = 0
+    for i in range(drift_key, len(projections)):
+        # Calculate drift for this step
+        current_drift = projections[i] - adjusted_projections[-1]
+        vis_drift_step = np.linalg.norm(current_drift, axis=1).mean()
+        target_drift_step = np.abs(target_drift[i - 1])  # Reference target drift for this step
+
+        # Determine scaling factor
+        if vis_drift_step == 0 or vis_drift_step < target_drift_step * scaling_difference:
+            scaling_factor = 1.0
+        else:
+            scaling_factor = target_drift_step / vis_drift_step * scaling_difference
+            changes += 1
+            # print(f"{i}: {vis_drift_step} > {target_drift_step}")
+            # print(scaling_factor)
+
+        # Apply scaling and update
+        adjusted_step = adjusted_projections[-1] + current_drift * scaling_factor
+        adjusted_projections.append(adjusted_step)
+
+    print(f"{changes / len(adjusted_projections)}% changes ({changes})")
+    return adjusted_projections
