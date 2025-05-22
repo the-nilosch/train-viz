@@ -21,11 +21,11 @@ def init_dataset(dataset_name, batch_size=128, samples_per_class=10):
     elif dataset_name == 'cifar10':
         train_data, eval_data, test_data = cifar10_init_dataset()
         num_classes = 10
-        subset_targets = np.array(train_data.targets)
+        subset_targets = np.array(eval_data.targets)
     elif dataset_name == 'cifar100':
         train_data, eval_data, test_data = cifar100_init_dataset()
+        subset_targets = np.array(eval_data.targets)
         num_classes = 100
-        subset_targets = np.array(train_data.targets)
 
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=False)
@@ -96,7 +96,7 @@ def cifar100_init_dataset():
     ])
 
     train_data = datasets.CIFAR100(root='./data', train=True, download=True, transform=train_transform)
-    eval_data = datasets.CIFAR10(root='./data', train=True, download=True, transform=eval_transform)
+    eval_data = datasets.CIFAR100(root='./data', train=True, download=True, transform=eval_transform)
     test_data = datasets.CIFAR100(root='./data', train=False, download=True, transform=eval_transform)
 
     return train_data, eval_data, test_data
