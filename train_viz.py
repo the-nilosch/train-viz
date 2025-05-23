@@ -644,28 +644,27 @@ def show_with_slider(
         projections,
         labels,
         figsize=(5, 5),
-        cmap='tab10',
         dot_size=5,
         alpha=0.5,
         interpolate=False,
-        steps_per_transition=10
-    ):
+        steps_per_transition=10,
+        dataset=None,
+        show_legend=False,
+):
+    from mnist import get_text_labels
+    class_names = range(0, 100) if dataset is None else get_text_labels(dataset)
+
     projections = np.array(projections)
+    projections = _interpolate_projections(projections, steps_per_transition) if interpolate else projections
 
-    # Interpolate if requested
-    if interpolate:
-        projections_interp = []
-        for a, b in zip(projections[:-1], projections[1:]):
-            for alpha_step in np.linspace(0, 1, steps_per_transition, endpoint=False):
-                interp = (1 - alpha_step) * a + alpha_step * b
-                projections_interp.append(interp)
-        projections_interp.append(projections[-1])
-    else:
-        projections_interp = projections
+    if dataset == "cifar100":
+        fine_index_to_plot_config, fine_to_coarse = _prepare_cifar100_plot_config(class_names)
 
-    projections = projections_interp
+    # Handle filtered labels robustly
+    unique_labels = np.unique(np.concatenate(labels))
+    num_classes = len(unique_labels)
+    label_to_index = {label: i for i, label in enumerate(unique_labels)}
 
-    # Setup figure
     fig, ax = plt.subplots(figsize=figsize)
 
     # Axis limits
@@ -677,33 +676,56 @@ def show_with_slider(
     ax.set_xticks([])
     ax.set_yticks([])
 
-    # Initial scatter
-    scatter = ax.scatter(projections[0][:, 0], projections[0][:, 1],
-                         c=labels[0], cmap=cmap, s=dot_size, alpha=alpha)
+    # Plot initial frame (0)
+    def draw_frame(idx):
+        ax.clear()
+        ax.set_xlim(-max_abs, max_abs)
+        ax.set_ylim(-max_abs, max_abs)
+        ax.set_aspect('equal')
+        ax.set_xticks([])
+        ax.set_yticks([])
 
-    # Add legend
-    unique_labels = np.unique(labels[0])
-    cmap_instance = plt.get_cmap(cmap, len(unique_labels))
-    handles = [plt.Line2D([0], [0], marker='o', color='w',
-                          label=str(lbl),
-                          markerfacecolor=cmap_instance(i),
-                          markersize=6)
-               for i, lbl in enumerate(unique_labels)]
-    ax.legend(handles=handles, title="Classes", bbox_to_anchor=(1.05, 1), loc='upper left')
+        projection = projections[idx]
+        label_frame = labels[0]
+
+        if dataset == "cifar100":
+            for fine_idx in unique_labels:
+                idxs = label_frame == fine_idx
+                config = fine_index_to_plot_config.get(fine_idx, {})
+                color = config.get('color', 'gray')
+                marker = config.get('marker', 'o')
+                ax.scatter(projection[idxs, 0], projection[idxs, 1],
+                           c=[color], marker=marker, label=class_names[fine_idx],
+                           alpha=alpha, edgecolors='none', s=dot_size * 3)
+
+        else:
+            cmap_used = 'tab10' if num_classes <= 10 else 'tab20'
+            # Map filtered labels to 0-based indices for colormap
+            mapped_labels = np.array([label_to_index[lbl] for lbl in label_frame])
+            sc = ax.scatter(projection[:, 0], projection[:, 1],
+                            c=mapped_labels, cmap=cmap_used, alpha=alpha, s=dot_size)
+            handles = [mlines.Line2D([], [], color=sc.cmap(sc.norm(i)), marker='o', linestyle='None',
+                                     markersize=6, label=f"{lbl}: {class_names[lbl]}") for i, lbl in
+                       enumerate(unique_labels)]
+            if show_legend:
+                ax.legend(handles=handles, title="Classes", bbox_to_anchor=(1.05, 1), loc='upper left')
+
+        if show_legend and dataset == "cifar100":
+            _create_cifar100_legend(ax, fine_index_to_plot_config, unique_labels, class_names, fine_to_coarse)
+
+    # Initial draw
+    draw_frame(0)
 
     # Slider and update
     def update(frame_idx):
-        scatter.set_offsets(projections[frame_idx])
-        scatter.set_array(np.array(labels[0]))
-        fig.canvas.draw_idle()
+        draw_frame(frame_idx)
 
-    slider = widgets.Play(min=0, max=len(projections)-1, step=1)
-    slider_control = widgets.IntSlider(min=0, max=len(projections)-1, step=1)
+    slider = widgets.Play(min=0, max=len(projections) - 1, step=1)
+    slider_control = widgets.IntSlider(min=0, max=len(projections) - 1, step=1)
     widgets.jslink((slider, 'value'), (slider_control, 'value'))
 
     out = widgets.interactive_output(update, {'frame_idx': slider_control})
     display(widgets.VBox([widgets.HBox([slider, slider_control]), out]))
-
 
 
 def show_multiple_projections_with_slider(
@@ -711,36 +733,36 @@ def show_multiple_projections_with_slider(
     labels,
     titles=None,
     figsize_per_plot=(5, 5),
-    cmap='tab10',
     dot_size=5,
     alpha=0.6,
     interpolate=False,
     steps_per_transition=10,
-    shared_axes=True
+    shared_axes=True,
+    dataset=None
 ):
-    num_views = len(projections_list)
+    from mnist import get_text_labels, get_cifar100_fine_to_coarse_labels, get_cifar100_coarse_to_fine_labels
+    class_names = range(0, 100) if dataset is None else get_text_labels(dataset)
+
+    if dataset == "cifar100":
+        fine_index_to_plot_config, fine_to_coarse = _prepare_cifar100_plot_config(class_names)
+
     projections_list = [np.array(p) for p in projections_list]
 
     # Interpolation
-    def interpolate_projections(projs):
-        if not interpolate:
-            return projs
-        projs_interp = []
-        for a, b in zip(projs[:-1], projs[1:]):
-            for alpha_step in np.linspace(0, 1, steps_per_transition, endpoint=False):
-                interp = (1 - alpha_step) * a + alpha_step * b
-                projs_interp.append(interp)
-        projs_interp.append(projs[-1])
-        return np.array(projs_interp)
 
-    projections_list = [interpolate_projections(p) for p in projections_list]
+    if interpolate:
+        projections_list = [_interpolate_projections(p, steps_per_transition) for p in projections_list]
 
-    # Verify all have the same number of frames
+    # Check length
     n_frames = len(projections_list[0])
     for p in projections_list:
         assert len(p) == n_frames, "All projection sets must have the same number of frames"
 
-    # === Layout calculation ===
+    num_views = len(projections_list)
+    unique_labels = np.unique(np.concatenate(labels))
+    label_frame = labels[0]
+
+    # Layout
     if num_views <= 4:
         nrows, ncols = 1, num_views
     else:
@@ -749,31 +771,20 @@ def show_multiple_projections_with_slider(
 
     fig, axes = plt.subplots(nrows, ncols,
                              figsize=(figsize_per_plot[0] * ncols, figsize_per_plot[1] * nrows))
-    axes = np.array(axes).reshape(-1)  # Flatten in case it's a 2D grid
+    axes = np.array(axes).reshape(-1)
 
-    # Trim excess axes if more than needed
     for ax in axes[num_views:]:
         fig.delaxes(ax)
-
     axes = axes[:num_views]
 
-    # Precompute axis limits
-    if shared_axes:
-        all_proj = np.concatenate([np.concatenate(p) for p in projections_list])
-        global_max = np.max(np.abs(all_proj))
-        axis_limits = [(-global_max, global_max)] * num_views
-    else:
-        axis_limits = []
-        for p in projections_list:
-            max_val = np.max(np.abs(np.concatenate(p)))
-            axis_limits.append((-max_val, max_val))
+    # Axis limits
+    axis_limits = _compute_axis_limits(projections_list, shared=shared_axes)
 
-    # Create initial scatter plots
+    # Create scatter handles
     scatters = []
     for i, ax in enumerate(axes):
-        xlim, ylim = axis_limits[i], axis_limits[i]
-        ax.set_xlim(xlim)
-        ax.set_ylim(ylim)
+        ax.set_xlim(axis_limits[i])
+        ax.set_ylim(axis_limits[i])
         ax.set_aspect('equal')
         ax.set_xticks([])
         ax.set_yticks([])
@@ -781,24 +792,107 @@ def show_multiple_projections_with_slider(
         title = titles[i] if titles and i < len(titles) else f"View {i+1}"
         ax.set_title(title)
 
-        sc = ax.scatter(projections_list[i][0][:, 0], projections_list[i][0][:, 1],
-                        c=labels[0], cmap=cmap, s=dot_size, alpha=alpha)
-        scatters.append(sc)
+        if dataset == "cifar100":
+            scatter_dict = {}
+            for fine_idx in unique_labels:
+                idxs = label_frame == fine_idx
+                color = fine_index_to_plot_config[fine_idx]['color']
+                marker = fine_index_to_plot_config[fine_idx]['marker']
+                scatter = ax.scatter(projections_list[i][0][idxs, 0],
+                                     projections_list[i][0][idxs, 1],
+                                     c=[color], marker=marker,
+                                     alpha=alpha, edgecolors='none', s=dot_size * 2)
+                scatter_dict[fine_idx] = scatter
+            scatters.append(scatter_dict)
+        else:
+            sc = ax.scatter(projections_list[i][0][:, 0], projections_list[i][0][:, 1],
+                            c=label_frame, cmap='tab10', s=dot_size, alpha=alpha)
+            scatters.append(sc)
 
-    # Update all subplots
+    # Update logic
     def update(frame_idx):
         for i in range(num_views):
-            scatters[i].set_offsets(projections_list[i][frame_idx])
-            scatters[i].set_array(np.array(labels[0]))
+            if dataset == "cifar100":
+                for fine_idx in unique_labels:
+                    idxs = label_frame == fine_idx
+                    scatters[i][fine_idx].set_offsets(projections_list[i][frame_idx][idxs])
+            else:
+                scatters[i].set_offsets(projections_list[i][frame_idx])
+                scatters[i].set_array(np.array(label_frame))
         fig.canvas.draw_idle()
 
-    # Interactive slider + play
+    # Slider
     slider = widgets.Play(min=0, max=n_frames - 1, step=1)
     slider_control = widgets.IntSlider(min=0, max=n_frames - 1, step=1)
     widgets.jslink((slider, 'value'), (slider_control, 'value'))
 
     out = widgets.interactive_output(update, {'frame_idx': slider_control})
     display(widgets.VBox([widgets.HBox([slider, slider_control]), out]))
+
+
+def _interpolate_projections(projections, steps_per_transition):
+    interpolated = []
+    for a, b in zip(projections[:-1], projections[1:]):
+        for alpha_step in np.linspace(0, 1, steps_per_transition, endpoint=False):
+            interp = (1 - alpha_step) * a + alpha_step * b
+            interpolated.append(interp)
+    interpolated.append(projections[-1])
+    return np.array(interpolated)
+
+def _prepare_cifar100_plot_config(class_names):
+    from mnist import get_cifar100_coarse_to_fine_labels, get_cifar100_fine_to_coarse_labels
+    marker_styles = ['o', 's', '^', 'v', '<', '>', 'P', '*', 'X', 'D']
+
+    coarse_to_fine = get_cifar100_coarse_to_fine_labels()
+    fine_to_coarse = get_cifar100_fine_to_coarse_labels()
+    coarse_names = list(coarse_to_fine.keys())
+    cmap = plt.colormaps.get_cmap('tab20').resampled(len(coarse_names))
+    coarse_color_map = {coarse: cmap(i) for i, coarse in enumerate(coarse_names)}
+    fine_name_to_index = {name: i for i, name in enumerate(class_names)}
+
+    plot_config = {}
+    for coarse in coarse_names:
+        fine_list = coarse_to_fine[coarse]
+        color = coarse_color_map[coarse]
+        for j, fine in enumerate(fine_list):
+            fine_idx = fine_name_to_index[fine]
+            marker = marker_styles[j % len(marker_styles)]
+            plot_config[fine_idx] = {'color': color, 'marker': marker, 'coarse': coarse}
+    return plot_config, fine_to_coarse
+
+def _compute_axis_limits(projections_list, shared=True):
+    if shared:
+        all_proj = np.concatenate([np.concatenate(p) for p in projections_list])
+        max_val = np.max(np.abs(all_proj))
+        return [(-max_val, max_val)] * len(projections_list)
+    else:
+        limits = []
+        for p in projections_list:
+            max_val = np.max(np.abs(np.concatenate(p)))
+            limits.append((-max_val, max_val))
+        return limits
+
+def _create_cifar100_legend(ax, fine_index_to_plot_config, unique_labels, class_names, fine_to_coarse):
+    from collections import defaultdict
+    import matplotlib.lines as mlines
+
+    legend_entries = defaultdict(list)
+    for fine_idx in unique_labels:
+        coarse = fine_to_coarse[class_names[fine_idx]]
+        label = class_names[fine_idx]
+        marker = fine_index_to_plot_config[fine_idx]['marker']
+        color = fine_index_to_plot_config[fine_idx]['color']
+        handle = mlines.Line2D([], [], color=color, marker=marker, linestyle='None', label=label)
+        legend_entries[coarse].append(handle)
+
+    legend_items = []
+    for coarse, handles in legend_entries.items():
+        title_handle = mlines.Line2D([], [], color='none', label=f"[{coarse}]", linestyle='None')
+        legend_items.append(title_handle)
+        legend_items.extend(handles)
+
+    ax.legend(handles=legend_items, bbox_to_anchor=(1.05, 1), loc='upper left',
+              title="Fine Classes by Coarse Group")
 
 
 def adjust_visualization_speed(projections, embedding_drifts, drift_key):
@@ -844,3 +938,68 @@ def adjust_visualization_speed(projections, embedding_drifts, drift_key):
 
     print(f"{changes / len(adjusted_projections)}% changes ({changes})")
     return adjusted_projections
+
+
+def filter_classes(projections, labels, selected_classes):
+    projections_filtered = []
+    labels_filtered = []
+
+    for proj, lbl in zip(projections, labels):
+        mask = np.isin(lbl, selected_classes)
+        projections_filtered.append(proj[mask])
+        labels_filtered.append(lbl[mask])
+
+    return projections_filtered, labels_filtered
+
+
+def show_cifar100_legend(dot_size=6, figsize=(8, 6), ncol=4):
+    from mnist import get_cifar100_coarse_to_fine_labels
+
+    coarse_to_fine = get_cifar100_coarse_to_fine_labels()
+    coarse_names = list(coarse_to_fine.keys())
+
+    # Use a colormap with 20 distinct colors
+    cmap = cm.get_cmap('tab20', len(coarse_names))
+    coarse_color_map = {coarse: cmap(i) for i, coarse in enumerate(coarse_names)}
+
+    # Build fine name to index map (CIFAR-100 order)
+    all_fine_names = sum(coarse_to_fine.values(), [])  # Flatten all fine names
+    fine_name_to_index = {name: idx for idx, name in enumerate(sorted(all_fine_names))}
+
+    # Build legend handles
+    legend_items = []
+    for i, coarse in enumerate(coarse_names):
+        color = coarse_color_map[coarse]
+        fine_classes = coarse_to_fine[coarse]
+
+        # Coarse group title (invisible marker)
+        title_handle = mlines.Line2D([], [], color='none', label=f"{coarse.upper()}", linestyle='None')
+        legend_items.append(title_handle)
+
+        for j, fine in enumerate(fine_classes):
+            marker = marker_styles[j % len(marker_styles)]
+            index = fine_name_to_index[fine]
+            label = f"[{index}] {fine}"
+            handle = mlines.Line2D([], [], color=color, marker=marker, linestyle='None',
+                                   markersize=dot_size, label=label)
+            legend_items.append(handle)
+
+    # Plot the legend in an empty figure
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.axis('off')
+
+    legend = ax.legend(
+        handles=legend_items,
+        loc='center',
+        frameon=False,
+        title="CIFAR-100 Classes",
+        ncol=ncol,
+        columnspacing=1.5,
+        handletextpad=0.5,
+        borderaxespad=0.5,
+        fontsize='x-small',
+        title_fontsize='medium'
+    )
+
+    plt.tight_layout()
+    plt.show()
