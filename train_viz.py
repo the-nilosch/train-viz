@@ -6,6 +6,7 @@ import matplotlib
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.lines as mlines
 import matplotlib.cm as cm
 from torch.nn import CrossEntropyLoss
 from IPython.display import clear_output
@@ -18,12 +19,12 @@ marker_styles = ['o', 's', '^', 'v', '<', '>', 'P', '*', 'X', 'D']
 
 def train_model_with_embedding_tracking(
     model, train_loader, test_loader, subset_loader, device, num_classes,
-    epochs=10, learning_rate=0.001, embedding_records_per_epoch=10, average_window_size=10,
+    epochs=10, learning_rate=0.001, embedding_records_per_epoch=10, average_window_size=30,
     track_gradients=True, track_embedding_drift=True, track_cosine_similarity=False, track_scheduled_lr=False,
-    track_pca=False, early_stopping=True, patience=4, weight_decay=0.05,
+    track_pca=False, early_stopping=True, patience=4, weight_decay=0.05, optimizer=None, scheduler=None,
 ):
     assert model.__class__.__name__ in ['ViT', 'CNN', 'MLP'], "Model must be ViT, CNN, or MLP"
-    optimizer, scheduler, criterion = _setup_training(model, learning_rate, epochs, weight_decay)
+    optimizer, scheduler, criterion = _setup_training(model, learning_rate, epochs, weight_decay, optimizer=optimizer, scheduler=scheduler)
 
     # Initialize lists for performance tracking
     train_losses, val_losses = [], []
@@ -38,8 +39,8 @@ def train_model_with_embedding_tracking(
     embedding_counter = 0
 
     # Initialize lists for gradient tracking
-    gradient_norms, max_gradients, grad_param_ratios, batch_indices = [], [], [], []
-    batch_counter = 0 # will track absolute batch index for x-axis
+    gradient_norms, max_gradients, grad_param_ratios, gradient_indices = [], [], [], []
+    gradient_counter = 0 # will track absolute batch index for x-axis
 
     # Logging setup
     logging.basicConfig(level=logging.INFO, force=True)
@@ -72,13 +73,13 @@ def train_model_with_embedding_tracking(
             loss.backward()
 
             # Gradient Tracking
-            if track_gradients and (batch_idx % int(embedding_batch_interval/average_window_size) == 0):
+            if track_gradients and (batch_idx % int(embedding_batch_interval/2) == 0):
                 grad_norm, max_grad, grad_ratio = _track_gradients(model)
                 gradient_norms.append(grad_norm)
                 max_gradients.append(max_grad)
                 grad_param_ratios.append(grad_ratio)
-                batch_indices.append(batch_counter)
-                batch_counter += 1
+                gradient_indices.append(gradient_counter)
+                gradient_counter += 1
 
             optimizer.step()
 
@@ -133,8 +134,13 @@ def train_model_with_embedding_tracking(
         val_accuracies.append(val_acc)
 
         if scheduler is not None:
-            scheduler.step()
-            scheduler_history.append(scheduler.get_last_lr())
+            if scheduler.__class__.__name__ == 'ReduceLROnPlateau':
+                scheduler.step(val_loss)
+            else:
+                scheduler.step()
+            scheduler_history.append(scheduler.get_last_lr()[-1])
+        else:
+            scheduler_history.append(learning_rate)
 
         # Live plot update
         fig, axs = _live_plot_update(num_figures=num_figures)
@@ -142,7 +148,7 @@ def train_model_with_embedding_tracking(
 
         pos = 1
         if track_gradients:
-            _plot_gradients(axs[pos], batch_indices, gradient_norms, max_gradients, grad_param_ratios, average_window_size)
+            _plot_gradients(axs[pos], gradient_indices, gradient_norms, max_gradients, grad_param_ratios, average_window_size)
             pos += 1
         if track_scheduled_lr and scheduler is not None:
             _plot_scheduled_lr(axs[pos], scheduler_history)
@@ -201,20 +207,22 @@ def train_model_with_embedding_tracking(
         'gradient_norms': gradient_norms,
         'max_gradients': max_gradients,
         'grad_param_ratios': grad_param_ratios,
+        'scheduler_history': scheduler_history,
     }
 
-def _setup_training(model, learning_rate, epochs, weight_decay):
+def _setup_training(model, learning_rate, epochs, weight_decay, optimizer=None, scheduler=None):
+
     assert model.__class__.__name__ in ['ViT', 'CNN', 'MLP'], "Model must be ViT, CNN, or MLP"
 
     if model.__class__.__name__ == 'MLP':
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate) if optimizer is None else optimizer
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5) if scheduler is None else scheduler
     elif model.__class__.__name__ == 'CNN':
-        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay) if optimizer is None else optimizer
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs) if scheduler is None else scheduler
     elif model.__class__.__name__ == 'ViT':
-        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay) if optimizer is None else optimizer
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs) if scheduler is None else scheduler
 
     criterion = CrossEntropyLoss()
     return optimizer, scheduler, criterion
@@ -297,6 +305,7 @@ def _plot_gradients(ax, batch_indices, gradient_norms, max_gradients, grad_param
                 label='Max Gradient (Avg)', alpha=0.8, linewidth=1.5)
         ax.plot(avg_indices, _moving_average(grad_param_ratios, window_size), color='red',
                 label='Grad/Param Ratio (Avg)', alpha=0.8, linewidth=1.5)
+    ax.set_ylim(0, max(max(max_gradients), max(grad_param_ratios)))
     ax.legend(loc='upper left')
 
     ax2 = ax.twinx()
@@ -304,6 +313,7 @@ def _plot_gradients(ax, batch_indices, gradient_norms, max_gradients, grad_param
     if len(batch_indices) >= window_size:
         ax2.plot(avg_indices, _moving_average(gradient_norms, window_size), color='blue', linestyle='-',
                  label='Gradient Norm (Avg)', alpha=0.8, linewidth=1.5)
+    ax2.set_ylim(0, max(gradient_norms))
     ax2.set_ylabel('Gradient Norm')
     ax2.legend(loc='upper right')
 
@@ -410,12 +420,15 @@ def _plot_embedding_drift(ax, embedding_drifts, title="Embedding Drift"):
     colors = ['green', 'blue', 'orange', 'red', 'purple']
     labels = ['Drift 1', 'Drift 2', 'Drift 4', 'Drift 8', 'Drift 16']
 
+    y_max = 0
     for skip, color, label in zip(embedding_drifts.keys(), colors, labels):
         drift_data = embedding_drifts[skip]
+        y_max = max(y_max, np.max(drift_data))
         if len(drift_data) > 0:
             indices = range(1, len(drift_data) + 1)
             ax.plot(indices, drift_data, color=color, label=label, alpha=0.7)
 
+    ax.set_ylim(0, y_max * 1.1)
     ax.set_title(title)
     ax.set_ylabel("Drift Distance")
     ax.set_xlabel("Snapshot Index")
