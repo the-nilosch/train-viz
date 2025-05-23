@@ -415,7 +415,7 @@ def visualization_drift_vs_embedding_drift(projections, embedding_drifts, verbos
 
     return mean_correlation
 
-def _plot_embedding_drift(ax, embedding_drifts, title="Embedding Drift"):
+def _plot_embedding_drift(ax, embedding_drifts, title="Embedding Drift", max_multiply=1.1):
     """Plots embedding drift."""
     colors = ['green', 'blue', 'orange', 'red', 'purple']
     labels = ['Drift 1', 'Drift 2', 'Drift 4', 'Drift 8', 'Drift 16']
@@ -423,16 +423,15 @@ def _plot_embedding_drift(ax, embedding_drifts, title="Embedding Drift"):
     y_max = 0
     for skip, color, label in zip(embedding_drifts.keys(), colors, labels):
         drift_data = embedding_drifts[skip]
-        y_max = max(y_max, np.max(drift_data))
-        if len(drift_data) > 0:
-            indices = range(1, len(drift_data) + 1)
-            ax.plot(indices, drift_data, color=color, label=label, alpha=0.7)
-
-    ax.set_ylim(0, y_max * 1.1)
+        indices = range(1, len(drift_data) + 1)
+        ax.plot(indices, drift_data, color=color, label=label, alpha=0.7)
+        if len(drift_data[skip:]) > 0:
+            y_max = max(y_max, max(drift_data[skip:]))
+    ax.set_ylim(0, y_max * max_multiply)
     ax.set_title(title)
     ax.set_ylabel("Drift Distance")
     ax.set_xlabel("Snapshot Index")
-    ax.legend(loc='upper left')
+    ax.legend(loc='upper right')
 
 def _moving_average(data, window_size):
     """Calculate the moving average with a specified window size."""
