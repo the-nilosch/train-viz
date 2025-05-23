@@ -101,6 +101,47 @@ def cifar100_init_dataset():
 
     return train_data, eval_data, test_data
 
+def get_text_labels(dataset_name):
+    if dataset_name == "mnist":
+        return [str(i) for i in range(10)]
+    elif dataset_name == "cifar10":
+        return datasets.CIFAR10(root='./data', download=True).classes
+    elif dataset_name == "cifar100":
+        return datasets.CIFAR100(root='./data', download=True).classes
+    else:
+        raise ValueError(f"Unsupported dataset: {dataset_name}")
+
+def get_cifar100_coarse_to_fine_labels():
+    return {
+        "aquatic mammals": ["beaver", "dolphin", "otter", "seal", "whale"],
+        "fish": ["aquarium_fish", "flatfish", "ray", "shark", "trout"],
+        "flowers": ["orchid", "poppy", "rose", "sunflower", "tulip"],
+        "food containers": ["bottle", "bowl", "can", "cup", "plate"],
+        "fruit and vegetables": ["apple", "mushroom", "orange", "pear", "sweet_pepper"],
+        "household electrical devices": ["clock", "keyboard", "lamp", "telephone", "television"],
+        "household furniture": ["bed", "chair", "couch", "table", "wardrobe"],
+        "insects": ["bee", "beetle", "butterfly", "caterpillar", "cockroach"],
+        "largecarnivores": ["bear", "leopard", "lion", "tiger", "wolf"],
+        "large man-made outdoor things": ["bridge", "castle", "house", "road", "skyscraper"],
+        "large natural outdoor scenes": ["cloud", "forest", "mountain", "plain", "sea"],
+        "large omnivores and herbivores": ["camel", "cattle", "chimpanzee", "elephant", "kangaroo"],
+        "medium-sized mammals": ["fox", "porcupine", "possum", "raccoon", "skunk"],
+        "non-insect invertebrates": ["crab", "lobster", "snail", "spider", "worm"],
+        "people": ["baby", "boy", "girl", "man", "woman"],
+        "reptiles": ["crocodile", "dinosaur", "lizard", "snake", "turtle"],
+        "small mammals": ["hamster", "mouse", "rabbit", "shrew", "squirrel"],
+        "trees": ["maple_tree", "oak_tree", "palm_tree", "pine_tree", "willow_tree"],
+        "vehicles 1": ["bicycle", "bus", "motorcycle", "pickup_truck", "train"],
+        "vehicles 2": ["lawn_mower", "rocket", "streetcar", "tank", "tractor"],
+    }
+
+def get_cifar100_fine_to_coarse_labels():
+    coarse_to_fine = get_cifar100_coarse_to_fine_labels()
+    return {
+        fine: coarse
+        for coarse, fine_list in coarse_to_fine.items()
+        for fine in fine_list
+    }
 
 def init_mlp_for_dataset(dataset_name, hidden_dims=[128, 64], dropout=0.2):
     if dataset_name == "mnist":
