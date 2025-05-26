@@ -2,11 +2,11 @@ import torch
 import torch.nn as nn
 
 class PatchEmbedding(nn.Module):
-    def __init__(self, img_size=32, patch_size=4, emb_dim=128):
+    def __init__(self, img_size=32, patch_size=4, emb_dim=128, in_channels=3):
         super().__init__()
         self.patch_size = patch_size
         self.num_patches = (img_size // patch_size) ** 2
-        self.projection = nn.Conv2d(3, emb_dim, kernel_size=patch_size, stride=patch_size)
+        self.projection = nn.Conv2d(in_channels, emb_dim, kernel_size=patch_size, stride=patch_size)
         self.cls_token = nn.Parameter(torch.randn(1, 1, emb_dim))
         self.pos_embedding = nn.Parameter(torch.randn(1, self.num_patches + 1, emb_dim))
 
@@ -37,10 +37,10 @@ class TransformerEncoder(nn.Module):
         return self.transformer(x)
 
 class ViT(nn.Module):
-    def __init__(self, img_size=32, patch_size=4, num_classes=10, emb_dim=128, depth=6, num_heads=4, mlp_dim=256, dropout=0.1):
+    def __init__(self, img_size=32, patch_size=4, num_classes=10, emb_dim=128, depth=6, num_heads=4, mlp_dim=256, dropout=0.1, input_channels=3):
         super().__init__()
         self.emb_dim = emb_dim
-        self.patch_embed = PatchEmbedding(img_size, patch_size, emb_dim)
+        self.patch_embed = PatchEmbedding(img_size, patch_size, emb_dim, in_channels=input_channels)
         self.transformer_encoder = TransformerEncoder(emb_dim, num_heads, depth, mlp_dim, dropout)
         self.head = nn.Linear(emb_dim, num_classes)
 

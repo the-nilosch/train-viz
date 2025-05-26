@@ -286,7 +286,7 @@ def init_cnn_for_dataset(dataset_name, conv_dims=[64, 128], kernel_sizes=[3, 3],
 
     return CNN(conv_dims=conv_dims, kernel_sizes=kernel_sizes, hidden_dims=hidden_dims, num_classes=num_classes, input_channels=input_channels, dropout=dropout)
 
-def init_vit_for_dataset(dataset_name, emb_dim=128, depth=6, num_heads=4, mlp_dim=256, dropout=0.1):
+def init_vit_for_dataset(dataset_name, emb_dim=128, depth=6, num_heads=4, mlp_dim=256, dropout=0.1, patch_size=4):
     if dataset_name == "mnist":
         img_size = 28
         num_classes = 10
@@ -302,17 +302,16 @@ def init_vit_for_dataset(dataset_name, emb_dim=128, depth=6, num_heads=4, mlp_di
     else:
         raise ValueError(f"Unsupported dataset: {dataset_name}")
 
-    if input_channels != 3:
-        raise ValueError("Current ViT implementation supports only RGB images (3 channels).")
 
     model = ViT(
         img_size=img_size,
-        patch_size=4,
+        patch_size=patch_size,
         num_classes=num_classes,
         emb_dim=emb_dim,
         depth=depth,
         num_heads=num_heads,
         mlp_dim=mlp_dim,
         dropout=dropout,
+        input_channels=input_channels
     )
     return model

@@ -15,7 +15,7 @@ import ipywidgets as widgets
 from IPython.display import display
 import torch.nn.functional as F
 
-marker_styles = ['o', 's', '^', 'v', '<', '>', 'P', '*', 'X', 'D']
+marker_styles = ['o', 'p', '^', 'X', 'D', 'P', 'v', '<', '>', '*', "s"]
 
 def train_model_with_embedding_tracking(
     model, train_loader, test_loader, subset_loader, device, num_classes,
@@ -343,7 +343,7 @@ def _plot_pca(ax, embedding_snapshots, embedding_snapshot_labels, embedding_reco
         ax.scatter(projection[:, 0], projection[:, 1],
                    c=labels, cmap=cmap, alpha=0.7, s=size)
     else:
-        cmap = plt.get_cmap('nipy_spectral', num_classes)
+        cmap = plt.get_cmap('tab20', num_classes)
         for i in range(num_classes):
             idx = labels == i
             marker = marker_styles[i % len(marker_styles)]
@@ -649,6 +649,7 @@ def show_with_slider(
         steps_per_transition=10,
         dataset=None,
         show_legend=False,
+        symmetric=False
 ):
     from mnist import get_text_labels
     class_names = range(0, 100) if dataset is None else get_text_labels(dataset)
@@ -667,22 +668,25 @@ def show_with_slider(
     fig, ax = plt.subplots(figsize=figsize)
 
     # Axis limits
-    all_proj = np.concatenate(projections, axis=0)
-    max_abs = np.max(np.abs(all_proj))
-    ax.set_xlim(-max_abs, max_abs)
-    ax.set_ylim(-max_abs, max_abs)
+    x_min, x_max, y_min, y_max = _set_equal_aspect_limits(projections, ax, symmetric)
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
     ax.set_aspect('equal')
     ax.set_xticks([])
     ax.set_yticks([])
+    ax.axhline(0, color='gray', linewidth=0.5, linestyle='--', alpha=0.3)
+    ax.axvline(0, color='gray', linewidth=0.5, linestyle='--', alpha=0.3)
 
     # Plot initial frame (0)
     def draw_frame(idx):
         ax.clear()
-        ax.set_xlim(-max_abs, max_abs)
-        ax.set_ylim(-max_abs, max_abs)
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
         ax.set_aspect('equal')
         ax.set_xticks([])
         ax.set_yticks([])
+        ax.axhline(0, color='gray', linewidth=0.5, linestyle='--', alpha=0.3)
+        ax.axvline(0, color='gray', linewidth=0.5, linestyle='--', alpha=0.3)
 
         projection = projections[idx]
         label_frame = labels[0]
@@ -828,6 +832,42 @@ def show_multiple_projections_with_slider(
     out = widgets.interactive_output(update, {'frame_idx': slider_control})
     display(widgets.VBox([widgets.HBox([slider, slider_control]), out]))
 
+def _set_equal_aspect_limits(projections, ax, symmetric=True):
+    all_proj = np.concatenate(projections, axis=0)
+
+    if symmetric:
+        max_abs = np.max(np.abs(all_proj)) * 1.05
+        ax.set_xlim(-max_abs, max_abs)
+        ax.set_ylim(-max_abs, max_abs)
+        return -max_abs, max_abs, -max_abs, max_abs
+
+    else:
+        x_min, x_max = all_proj[:, 0].min(), all_proj[:, 0].max()
+        y_min, y_max = all_proj[:, 1].min(), all_proj[:, 1].max()
+
+        # Padding
+        padding_x = (x_max - x_min) * 0.05
+        padding_y = (y_max - y_min) * 0.05
+
+        x_min -= padding_x
+        x_max += padding_x
+        y_min -= padding_y
+        y_max += padding_y
+
+        # Lengths and center
+        x_range = x_max - x_min
+        y_range = y_max - y_min
+        max_range = max(x_range, y_range)
+
+        x_center = (x_max + x_min) / 2
+        y_center = (y_max + y_min) / 2
+
+        # Symmetrize around center with equal aspect ratio
+        ax.set_xlim(x_center - max_range / 2, x_center + max_range / 2)
+        ax.set_ylim(y_center - max_range / 2, y_center + max_range / 2)
+
+        return x_center - max_range / 2, x_center + max_range / 2, y_center - max_range / 2, y_center + max_range / 2
+
 
 def _interpolate_projections(projections, steps_per_transition):
     interpolated = []
@@ -838,14 +878,13 @@ def _interpolate_projections(projections, steps_per_transition):
     interpolated.append(projections[-1])
     return np.array(interpolated)
 
-def _prepare_cifar100_plot_config(class_names):
+def _prepare_cifar100_plot_config(class_names, cmap='tab20'):
     from mnist import get_cifar100_coarse_to_fine_labels, get_cifar100_fine_to_coarse_labels
-    marker_styles = ['o', 's', '^', 'v', '<', '>', 'P', '*', 'X', 'D']
 
     coarse_to_fine = get_cifar100_coarse_to_fine_labels()
     fine_to_coarse = get_cifar100_fine_to_coarse_labels()
     coarse_names = list(coarse_to_fine.keys())
-    cmap = plt.colormaps.get_cmap('tab20').resampled(len(coarse_names))
+    cmap = plt.colormaps.get_cmap(cmap).resampled(len(coarse_names))
     coarse_color_map = {coarse: cmap(i) for i, coarse in enumerate(coarse_names)}
     fine_name_to_index = {name: i for i, name in enumerate(class_names)}
 
@@ -951,54 +990,51 @@ def filter_classes(projections, labels, selected_classes):
     return projections_filtered, labels_filtered
 
 
-def show_cifar100_legend(dot_size=6, figsize=(8, 6), ncol=4):
-    from mnist import get_cifar100_coarse_to_fine_labels
+def show_cifar100_legend(dot_size=6, figsize=(8, 6), ncol=4, cmap='tab20'):
+    from mnist import get_text_labels
+    import matplotlib.lines as mlines
+    import matplotlib.pyplot as plt
+    from collections import defaultdict
 
-    coarse_to_fine = get_cifar100_coarse_to_fine_labels()
-    coarse_names = list(coarse_to_fine.keys())
+    class_names = get_text_labels("cifar100")
+    fine_index_to_plot_config, fine_to_coarse = _prepare_cifar100_plot_config(class_names, cmap)
 
-    # Use a colormap with 20 distinct colors
-    cmap = cm.get_cmap('tab20', len(coarse_names))
-    coarse_color_map = {coarse: cmap(i) for i, coarse in enumerate(coarse_names)}
+    # Group fine indices by their coarse group.
+    legend_entries = defaultdict(list)
+    for fine_idx, config in fine_index_to_plot_config.items():
+        coarse = config["coarse"]
+        label = f"[{fine_idx}] {class_names[fine_idx]}"
+        legend_entries[coarse].append((fine_idx, label, config))
 
-    # Build fine name to index map (CIFAR-100 order)
-    all_fine_names = sum(coarse_to_fine.values(), [])  # Flatten all fine names
-    fine_name_to_index = {name: idx for idx, name in enumerate(sorted(all_fine_names))}
-
-    # Build legend handles
+    # Build legend handles sorted by coarse groups.
     legend_items = []
-    for i, coarse in enumerate(coarse_names):
-        color = coarse_color_map[coarse]
-        fine_classes = coarse_to_fine[coarse]
-
-        # Coarse group title (invisible marker)
-        title_handle = mlines.Line2D([], [], color='none', label=f"{coarse.upper()}", linestyle='None')
+    for coarse in sorted(legend_entries.keys()):
+        title_handle = mlines.Line2D([], [], color="none", label=f"{coarse.upper()}", linestyle="None")
         legend_items.append(title_handle)
-
-        for j, fine in enumerate(fine_classes):
-            marker = marker_styles[j % len(marker_styles)]
-            index = fine_name_to_index[fine]
-            label = f"[{index}] {fine}"
-            handle = mlines.Line2D([], [], color=color, marker=marker, linestyle='None',
-                                   markersize=dot_size, label=label)
+        for _, label, config in sorted(legend_entries[coarse], key=lambda x: x[0]):
+            handle = mlines.Line2D(
+                [], [],
+                color=config["color"],
+                marker=config["marker"],
+                linestyle="None",
+                markersize=dot_size,
+                label=label
+            )
             legend_items.append(handle)
 
-    # Plot the legend in an empty figure
     fig, ax = plt.subplots(figsize=figsize)
-    ax.axis('off')
-
-    legend = ax.legend(
+    ax.axis("off")
+    ax.legend(
         handles=legend_items,
-        loc='center',
+        loc="center",
         frameon=False,
         title="CIFAR-100 Classes",
         ncol=ncol,
         columnspacing=1.5,
         handletextpad=0.5,
         borderaxespad=0.5,
-        fontsize='x-small',
-        title_fontsize='medium'
+        fontsize="x-small",
+        title_fontsize="medium"
     )
-
     plt.tight_layout()
     plt.show()
