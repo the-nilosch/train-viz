@@ -23,7 +23,7 @@ def train_model_with_embedding_tracking(
     track_gradients=True, track_embedding_drift=True, track_cosine_similarity=False, track_scheduled_lr=False,
     track_pca=False, early_stopping=True, patience=4, weight_decay=0.05, optimizer=None, scheduler=None,
 ):
-    assert model.__class__.__name__ in ['ViT', 'CNN', 'MLP', 'ResNet'], "Model must be ViT, CNN, ResNet or MLP"
+    assert model.__class__.__name__ in ['ViT', 'CNN', 'MLP', 'ResNet', 'DenseNet'], "Model must be ViT, CNN, ResNet, DenseNet or MLP"
     optimizer, scheduler, criterion = _setup_training(model, learning_rate, epochs, weight_decay, optimizer=optimizer, scheduler=scheduler)
 
     # Initialize lists for performance tracking
@@ -213,7 +213,7 @@ def train_model_with_embedding_tracking(
 from torch.nn import CrossEntropyLoss
 
 def _setup_training(model, learning_rate, epochs, weight_decay, optimizer=None, scheduler=None):
-    supported_models = ['ViT', 'CNN', 'MLP', 'ResNet']
+    supported_models = ['ViT', 'CNN', 'MLP', 'ResNet', 'DenseNet']
     model_name = model.__class__.__name__
     assert model_name in supported_models, f"Model must be one of: {supported_models}"
 
@@ -221,7 +221,7 @@ def _setup_training(model, learning_rate, epochs, weight_decay, optimizer=None, 
         optimizer = optimizer or torch.optim.Adam(model.parameters(), lr=learning_rate)
         scheduler = scheduler or torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
 
-    elif model_name in ['CNN', 'ViT', 'ResNet']:
+    elif model_name in ['CNN', 'ViT', 'ResNet', 'DenseNet']:
         optimizer = optimizer or torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
         scheduler = scheduler or torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
