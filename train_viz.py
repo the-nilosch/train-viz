@@ -23,7 +23,7 @@ def train_model_with_embedding_tracking(
     track_gradients=True, track_embedding_drift=True, track_cosine_similarity=False, track_scheduled_lr=False,
     track_pca=False, early_stopping=True, patience=4, weight_decay=0.05, optimizer=None, scheduler=None,
 ):
-    assert model.__class__.__name__ in ['ViT', 'CNN', 'MLP'], "Model must be ViT, CNN, or MLP"
+    assert model.__class__.__name__ in ['ViT', 'CNN', 'MLP', 'ResNet'], "Model must be ViT, CNN, ResNet or MLP"
     optimizer, scheduler, criterion = _setup_training(model, learning_rate, epochs, weight_decay, optimizer=optimizer, scheduler=scheduler)
 
     # Initialize lists for performance tracking
@@ -210,22 +210,24 @@ def train_model_with_embedding_tracking(
         'scheduler_history': scheduler_history,
     }
 
+from torch.nn import CrossEntropyLoss
+
 def _setup_training(model, learning_rate, epochs, weight_decay, optimizer=None, scheduler=None):
+    supported_models = ['ViT', 'CNN', 'MLP', 'ResNet']
+    model_name = model.__class__.__name__
+    assert model_name in supported_models, f"Model must be one of: {supported_models}"
 
-    assert model.__class__.__name__ in ['ViT', 'CNN', 'MLP'], "Model must be ViT, CNN, or MLP"
+    if model_name == 'MLP':
+        optimizer = optimizer or torch.optim.Adam(model.parameters(), lr=learning_rate)
+        scheduler = scheduler or torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
 
-    if model.__class__.__name__ == 'MLP':
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate) if optimizer is None else optimizer
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5) if scheduler is None else scheduler
-    elif model.__class__.__name__ == 'CNN':
-        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay) if optimizer is None else optimizer
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs) if scheduler is None else scheduler
-    elif model.__class__.__name__ == 'ViT':
-        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay) if optimizer is None else optimizer
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs) if scheduler is None else scheduler
+    elif model_name in ['CNN', 'ViT', 'ResNet']:
+        optimizer = optimizer or torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        scheduler = scheduler or torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
     criterion = CrossEntropyLoss()
     return optimizer, scheduler, criterion
+
 
 def _live_plot_update(num_figures=1, ncols=2):
     plt.close('all')
