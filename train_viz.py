@@ -1040,3 +1040,123 @@ def show_cifar100_legend(dot_size=6, figsize=(8, 6), ncol=4, cmap='tab20'):
     )
     plt.tight_layout()
     plt.show()
+
+
+def show_with_slider_3d(
+        projections,
+        labels,
+        dot_size=5,
+        alpha=0.6,
+        interpolate=False,
+        steps_per_transition=10,
+        dataset=None,
+        show_legend=False  # placeholder for symmetry
+):
+    from vision_classification import get_text_labels
+    class_names = range(0, 100) if dataset is None else get_text_labels(dataset)
+    projections = np.array(projections)
+    projections = _interpolate_projections(projections, steps_per_transition) if interpolate else projections
+
+    if dataset == "cifar100":
+        fine_index_to_plot_config, fine_to_coarse = _prepare_cifar100_plot_config(class_names)
+
+    unique_labels = np.unique(np.concatenate(labels))
+    label_frame = labels[0]  # assumed constant
+
+    # Set up 3D plot
+    fig = plt.figure(figsize=(7, 7))
+    ax = fig.add_subplot(111, projection='3d')
+
+    all_proj = np.concatenate(projections, axis=0)
+    max_abs = np.max(np.abs(all_proj))
+    ax.set_xlim3d(-max_abs, max_abs)
+    ax.set_ylim3d(-max_abs, max_abs)
+    ax.set_zlim3d(-max_abs, max_abs)
+    ax.set_xticks([]);
+    ax.set_yticks([]);
+    ax.set_zticks([])
+
+    # Create initial scatter per fine class
+    scatter_dict = {}
+    if dataset == "cifar100":
+        for fine_idx in unique_labels:
+            idxs = label_frame == fine_idx
+            config = fine_index_to_plot_config.get(fine_idx, {})
+            color = config.get('color', 'gray')
+            marker = config.get('marker', 'o')
+            sc = ax.scatter(projections[0][idxs, 0],
+                            projections[0][idxs, 1],
+                            projections[0][idxs, 2],
+                            c=[color], marker=marker,
+                            alpha=alpha, edgecolors='none', s=dot_size * 2)
+            scatter_dict[fine_idx] = sc
+    else:
+        sc = ax.scatter(projections[0][:, 0],
+                        projections[0][:, 1],
+                        projections[0][:, 2],
+                        c=label_frame, cmap='tab10', alpha=alpha, s=dot_size)
+
+    # Update function
+    def update(frame_idx, azim_angle, elev_angle, auto_rotate):
+        if dataset == "cifar100":
+            for fine_idx in unique_labels:
+                idxs = label_frame == fine_idx
+                scatter_dict[fine_idx]._offsets3d = (
+                    projections[frame_idx][idxs, 0],
+                    projections[frame_idx][idxs, 1],
+                    projections[frame_idx][idxs, 2]
+                )
+        else:
+            sc._offsets3d = (
+                projections[frame_idx][:, 0],
+                projections[frame_idx][:, 1],
+                projections[frame_idx][:, 2]
+            )
+            sc.set_array(np.array(label_frame))
+
+        # Only update view if auto-rotate is enabled
+        if auto_rotate:
+            ax.view_init(elev=elev_angle, azim=azim_angle)
+
+        fig.canvas.draw_idle()
+
+    def on_azim_change(change):
+        toggle_auto_rotate.value = True
+
+    # Sliders
+    slider_frame = widgets.IntSlider(min=0, max=len(projections) - 1, step=1, description="Frame")
+    slider_azim = widgets.IntSlider(min=0, max=360, step=1, description="Rotation")
+    slider_azim.observe(on_azim_change, names='value')
+    toggle_auto_rotate = widgets.Checkbox(value=True, description="Auto-Rotate")
+
+    # Play controls
+    play_frame = widgets.Play(interval=150 / steps_per_transition, value=0, min=0, max=len(projections) - 1, step=1,
+                              description="▶")
+    play_azim = widgets.Play(interval=100, value=0, min=0, max=360, step=2, description="↻")
+    play_azim.observe(on_azim_change, names='value')
+    play_azim.loop = True
+
+    slider_elev = widgets.IntSlider(min=-90, max=90, step=1, value=30, description="Tilt")
+    play_elev = widgets.Play(interval=100, min=-90, max=90, step=1, description="↕")
+    play_elev.loop = True
+    widgets.jslink((play_elev, 'value'), (slider_elev, 'value'))
+
+    # Link sliders to play widgets
+    widgets.jslink((play_elev, 'value'), (slider_elev, 'value'))
+    widgets.jslink((play_frame, 'value'), (slider_frame, 'value'))
+    widgets.jslink((play_azim, 'value'), (slider_azim, 'value'))
+
+    out = widgets.interactive_output(update, {
+        'frame_idx': slider_frame,
+        'azim_angle': slider_azim,
+        'elev_angle': slider_elev,
+        'auto_rotate': toggle_auto_rotate
+    })
+
+    display(widgets.VBox([
+        widgets.HBox([play_frame, slider_frame]),
+        widgets.HBox([play_azim, slider_azim]),
+        widgets.HBox([play_elev, slider_elev]),
+        toggle_auto_rotate,
+        out
+    ]))
