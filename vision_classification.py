@@ -6,6 +6,7 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 
+from res_net import ResNet
 from vision_transformer import ViT
 
 
@@ -313,5 +314,34 @@ def init_vit_for_dataset(dataset_name, emb_dim=128, depth=6, num_heads=4, mlp_di
         mlp_dim=mlp_dim,
         dropout=dropout,
         input_channels=input_channels
+    )
+    return model
+
+def init_resnet_for_dataset(
+    dataset_name,
+    layers=[2, 2, 2, 2],
+    fc_hidden_dims=[],
+    dropout=0.2,
+    zero_init_residual=False
+):
+    if dataset_name == "mnist":
+        input_channels = 1
+        num_classes = 10
+    elif dataset_name == "cifar10":
+        input_channels = 3
+        num_classes = 10
+    elif dataset_name == "cifar100":
+        input_channels = 3
+        num_classes = 100
+    else:
+        raise ValueError(f"Unsupported dataset: {dataset_name}")
+
+    model = ResNet(
+        layers=layers,
+        num_classes=num_classes,
+        input_channels=input_channels,
+        fc_hidden_dims=fc_hidden_dims,
+        dropout=dropout,
+        zero_init_residual=zero_init_residual
     )
     return model
