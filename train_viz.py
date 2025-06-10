@@ -1,4 +1,5 @@
 import math
+import os
 from collections import deque
 from pprint import pprint
 
@@ -21,7 +22,7 @@ def train_model_with_embedding_tracking(
     model, train_loader, test_loader, subset_loader, device, num_classes,
     epochs=10, learning_rate=0.001, embedding_records_per_epoch=10, average_window_size=30,
     track_gradients=True, track_embedding_drift=True, track_cosine_similarity=False, track_scheduled_lr=False,
-    track_pca=False, early_stopping=True, patience=4, weight_decay=0.05, optimizer=None, scheduler=None,
+    track_pca=False, early_stopping=True, patience=4, weight_decay=0.05, optimizer=None, scheduler=None, dataset_name="none"
 ):
     assert model.__class__.__name__ in ['ViT', 'CNN', 'MLP', 'ResNet', 'DenseNet'], "Model must be ViT, CNN, ResNet, DenseNet or MLP"
     optimizer, scheduler, criterion = _setup_training(model, learning_rate, epochs, weight_decay, optimizer=optimizer, scheduler=scheduler)
@@ -30,6 +31,10 @@ def train_model_with_embedding_tracking(
     train_losses, val_losses = [], []
     train_accuracies, val_accuracies = [], []
     scheduler_history = []
+
+    # Loss Landscape
+    model_dir = f'trainings/models_{model.__class__.__name__}_{dataset_name}/'
+    os.makedirs(model_dir, exist_ok=True)
 
     # Initialize lists for embedding snapshot
     num_batches = len(train_loader)
@@ -141,6 +146,10 @@ def train_model_with_embedding_tracking(
             scheduler_history.append(scheduler.get_last_lr()[-1])
         else:
             scheduler_history.append(learning_rate)
+
+        # Loss Landscape: Save flattened model weights
+        weights = torch.nn.utils.parameters_to_vector(model.parameters()).detach().cpu()
+        torch.save(weights, os.path.join(model_dir, f'model-{epoch}.pt'))
 
         # Live plot update
         fig, axs = _live_plot_update(num_figures=num_figures)
