@@ -237,7 +237,6 @@ def _setup_training(model, learning_rate, epochs, weight_decay, optimizer=None, 
     criterion = CrossEntropyLoss()
     return optimizer, scheduler, criterion
 
-
 def _live_plot_update(num_figures=1, ncols=2):
     plt.close('all')
     clear_output(wait=True)
