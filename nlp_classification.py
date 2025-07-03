@@ -93,14 +93,75 @@ def init_dataset(
     return train_loader, test_loader, subset_loader, num_classes
 
 
-def init_nlp_model(model_name, vocab_size=None, num_classes=4, tokenizer=None, device=None):
-    if model_name == "bilstm":
-        model = BiLSTMClassifier(vocab_size, num_classes)
-    elif model_name == "textcnn":
-        model = TextCNNClassifier(vocab_size, num_classes)
-    elif model_name == "distilbert":
-        model = DistilBERTClassifier(num_classes, tokenizer)
+def init_nlp_model_for_dataset(
+    dataset_name,
+    model_name,
+    hidden_dim=128,
+    num_layers=1,
+    dropout=0.2,
+    tokenizer=None,
+    device=None
+):
+    """
+    Initializes an NLP model for a given dataset, mirroring the Vision-style init functions.
+
+    Parameters:
+    - dataset_name: str, e.g. "ag_news", "yelp", "dbpedia"
+    - model_name: str, e.g. "bilstm", "textcnn", "distilbert"
+    - hidden_dim, num_layers, dropout: model hyperparameters
+    - tokenizer: only needed for DistilBERT
+    - device: torch.device
+
+    Returns:
+    - model (on device)
+    """
+
+    # --- Define number of classes per dataset ---
+    if dataset_name.lower() == "ag_news":
+        num_classes = 4
+    elif dataset_name.lower() == "yelp":
+        num_classes = 5
+    elif dataset_name.lower() == "dbpedia":
+        num_classes = 14
     else:
-        raise ValueError(f"Unknown model: {model_name}")
+        raise ValueError(f"Unsupported dataset: {dataset_name}")
+
+    # --- Initialize model ---
+    if model_name == "bilstm":
+        import BiLSTMAttentionClassifier from models.bilstm_attention
+        model = BiLSTMAttentionClassifier(
+            vocab_size=...,  # Set to your vocab size (for word2vec it would be the vocab of the embeddings)
+            embedding_dim=400,  # Word2Vec Twitter embeddings are 400-dimensional
+            hidden_dim=400,  # BiLSTM layer has 400 hidden units (per direction)
+            num_layers=1,  # Single-layer BiLSTM
+            num_classes=6,  # 6 emotion classes in the original task (adjust for your dataset)
+            dropout=dropout,  # Try 0.3–0.5, tune if needed
+            pad_idx=your_pad_idx,  # Padding index, set according to your vocab
+            use_attention=True
+        )
+
+    elif model_name == "textcnn":
+        model = ParallelTextCNN(
+            vocab_size=len(vocab),
+            embedding_dim=300,
+            num_classes=NUM_CLASSES,
+            kernel_sizes=[2, 3, 4, 5],
+            num_filters=512,
+            dropout=0.5,
+            pad_idx=PAD_IDX,
+            pretrained_embeddings=your_tensor_or_None,
+            freeze_embeddings=False,
+            multi_label=False
+        )
+    elif model_name == "distilbert":
+        if tokenizer is None:
+            from transformers import DistilBertTokenizerFast
+            tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
+        model = DistilBERTClassifier(
+            num_classes=num_classes,
+            tokenizer=tokenizer
+        )
+    else:
+        raise ValueError(f"Unsupported model name: {model_name}")
 
     return model.to(device)
