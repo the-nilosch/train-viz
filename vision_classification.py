@@ -49,6 +49,7 @@ def init_dataset(dataset_name, batch_size=128, samples_per_class=10):
 
     return train_loader, test_loader, subset_loader
 
+
 def mnist_init_dataset():
     transform = transforms.ToTensor()
 
@@ -81,6 +82,7 @@ def cifar10_init_dataset():
 
     return train_data, eval_data, test_data
 
+
 def cifar100_init_dataset():
     # Training transform (with augmentation)
     train_transform = transforms.Compose([
@@ -102,6 +104,7 @@ def cifar100_init_dataset():
 
     return train_data, eval_data, test_data
 
+
 def get_text_labels(dataset_name):
     if dataset_name == "mnist":
         return [str(i) for i in range(10)]
@@ -111,6 +114,7 @@ def get_text_labels(dataset_name):
         return datasets.CIFAR100(root='./data', download=True).classes
     else:
         raise ValueError(f"Unsupported dataset: {dataset_name}")
+
 
 def get_cifar100_coarse_to_fine_labels():
     return {
@@ -136,6 +140,7 @@ def get_cifar100_coarse_to_fine_labels():
         "vehicles 2": ["lawn_mower", "rocket", "streetcar", "tank", "tractor"],
     }
 
+
 def get_cifar100_fine_to_coarse_labels():
     coarse_to_fine = get_cifar100_coarse_to_fine_labels()
     return {
@@ -143,6 +148,7 @@ def get_cifar100_fine_to_coarse_labels():
         for coarse, fine_list in coarse_to_fine.items()
         for fine in fine_list
     }
+
 
 def init_mlp_for_dataset(dataset_name, hidden_dims=[128, 64], dropout=0.2):
     if dataset_name == "mnist":
@@ -152,14 +158,16 @@ def init_mlp_for_dataset(dataset_name, hidden_dims=[128, 64], dropout=0.2):
         input_size = 32 * 32 * 3  # CIFAR image size (RGB channels)
         num_classes = 10
     elif dataset_name == "cifar100":
-        input_size = 64 * 64 * 3 # CIFAR-100 image size (RGB channels)
+        input_size = 64 * 64 * 3  # CIFAR-100 image size (RGB channels)
         num_classes = 100
     else:
         raise ValueError(f"Unsupported dataset: {dataset_name}")
 
     return MLP(hidden_dims=hidden_dims, input_size=input_size, num_classes=num_classes, dropout=dropout)
 
-def init_cnn_for_dataset(dataset_name, conv_dims=[64, 128], kernel_sizes=[3, 3], hidden_dims=[128], dropout=0.2):
+
+def init_cnn_for_dataset(dataset_name, conv_dims=[64, 128], kernel_sizes=[3, 3], hidden_dims=[128], dropout=0.2,
+                         use_residual=True):
     if dataset_name == "mnist":
         input_channels = 1
         num_classes = 10
@@ -172,7 +180,9 @@ def init_cnn_for_dataset(dataset_name, conv_dims=[64, 128], kernel_sizes=[3, 3],
     else:
         raise ValueError(f"Unsupported dataset: {dataset_name}")
 
-    return CNN(conv_dims=conv_dims, kernel_sizes=kernel_sizes, hidden_dims=hidden_dims, num_classes=num_classes, input_channels=input_channels, dropout=dropout)
+    return CNN(conv_dims=conv_dims, kernel_sizes=kernel_sizes, hidden_dims=hidden_dims, num_classes=num_classes,
+               input_channels=input_channels, dropout=dropout, use_residual=use_residual)
+
 
 def init_vit_for_dataset(dataset_name, emb_dim=128, depth=6, num_heads=4, mlp_dim=256, dropout=0.1, patch_size=4):
     if dataset_name == "mnist":
@@ -190,7 +200,6 @@ def init_vit_for_dataset(dataset_name, emb_dim=128, depth=6, num_heads=4, mlp_di
     else:
         raise ValueError(f"Unsupported dataset: {dataset_name}")
 
-
     model = ViT(
         img_size=img_size,
         patch_size=patch_size,
@@ -204,12 +213,13 @@ def init_vit_for_dataset(dataset_name, emb_dim=128, depth=6, num_heads=4, mlp_di
     )
     return model
 
+
 def init_resnet_for_dataset(
-    dataset_name,
-    layers=[2, 2, 2, 2],
-    fc_hidden_dims=[],
-    dropout=0.2,
-    zero_init_residual=False
+        dataset_name,
+        layers=[2, 2, 2, 2],
+        fc_hidden_dims=[],
+        dropout=0.2,
+        zero_init_residual=False
 ):
     if dataset_name == "mnist":
         input_channels = 1
@@ -235,11 +245,11 @@ def init_resnet_for_dataset(
 
 
 def init_densenet_for_dataset(
-    dataset_name,
-    block_config=(6, 12, 24),  # ähnlich DenseNet-121
-    growth_rate=16,
-    fc_hidden_dims=[128],
-    dropout=0.1
+        dataset_name,
+        block_config=(6, 12, 24),  # ähnlich DenseNet-121
+        growth_rate=16,
+        fc_hidden_dims=[128],
+        dropout=0.1
 ):
     if dataset_name == "mnist":
         input_channels = 1

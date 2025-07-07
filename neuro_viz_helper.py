@@ -32,6 +32,95 @@ def get_dataloader_flat(pt_files, batch_size, shuffle=True, num_workers=2):
     dataset = FlatTensorDataset(pt_files, transform=normalizer)
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers), normalizer
 
+### Training
+
+
+import torch
+import torch.nn as nn
+import pandas as pd
+import os
+from tqdm import tqdm
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+
+def train_autoencoder(
+    model,
+    train_loader,
+    device,
+    save_path='best_ae_model.pt',
+    num_epochs=100,
+    lr=1e-3,
+    patience=10,
+    log_every=5,
+    verbose=True
+):
+    """
+    Generic improved AE training loop with early stopping and scheduler.
+    Saves best model to save_path.
+    """
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
+    loss_fn = nn.MSELoss()
+
+    best_loss = float('inf')
+    epochs_no_improve = 0
+
+    losses_log = []
+
+    for epoch in range(1, num_epochs + 1):
+        model.train()
+        total_loss = 0.0
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch}"):
+            batch = batch.to(device)
+            recon, _ = model(batch)
+            loss = loss_fn(recon, batch)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+
+        avg_loss = total_loss / len(train_loader)
+        scheduler.step()
+
+        losses_log.append({'epoch': epoch, 'loss': avg_loss})
+
+        if verbose:
+            print(f"Epoch {epoch:03d} - Avg Loss: {avg_loss:.6f}")
+
+        # Early stopping logic
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            epochs_no_improve = 0
+            torch.save(model.state_dict(), save_path)
+            if verbose:
+                print(f"✅ New best model saved with loss {best_loss:.6f}")
+        else:
+            epochs_no_improve += 1
+            if verbose:
+                print(f"No improvement for {epochs_no_improve} epochs.")
+
+        if epochs_no_improve >= patience:
+            if verbose:
+                print(f"Early stopping triggered after {patience} epochs with no improvement.")
+            break
+
+        # Log to CSV every few epochs
+        if epoch % log_every == 0:
+            df_log = pd.DataFrame(losses_log)
+            df_log.to_csv(os.path.join(os.path.dirname(save_path), 'ae_training_log.csv'), index=False)
+
+    # Final save
+    df_log = pd.DataFrame(losses_log)
+    df_log.to_csv(os.path.join(os.path.dirname(save_path), 'ae_training_log.csv'), index=False)
+    if verbose:
+        print(f"Training complete. Best loss: {best_loss:.6f}")
+
+    return model
+
+
+
 ### Grid Generation
 def generate_latent_grid(min_map=-1, max_map=1, xnum=25, device='cpu'):
     step_size = (max_map - min_map) / xnum
@@ -97,7 +186,7 @@ class Loss:
         self.test_loader = DataLoader(test_dataset, batch_size=10000, shuffle=False, **kwargs)
 
     def get_loss(self, dnn, loss_name, whichloss):
-        if whichloss == "mse":
+        if whichloss == "mse" or whichloss == "crossentropy":
             loss = 0
             loader = self.test_loader if loss_name == "test_loss" else self.train_loader
             with torch.no_grad():

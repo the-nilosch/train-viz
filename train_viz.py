@@ -18,34 +18,38 @@ import torch.nn.functional as F
 
 marker_styles = ['o', 'p', '^', 'X', 'D', 'P', 'v', '<', '>', '*', "s"]
 
+
 def train_model_with_embedding_tracking(
-    model, train_loader, test_loader, subset_loader, device, num_classes,
-    epochs=10, learning_rate=0.001, embedding_records_per_epoch=10, average_window_size=30,
-    track_gradients=True, track_embedding_drift=True, track_cosine_similarity=False, track_scheduled_lr=False,
-    track_pca=False, early_stopping=True, patience=4, weight_decay=0.05, optimizer=None, scheduler=None, dataset_name="none"
+        model, train_loader, test_loader, subset_loader, device, num_classes,
+        epochs=10, learning_rate=0.001, embedding_records_per_epoch=10, average_window_size=30,
+        track_gradients=True, track_embedding_drift=True, track_cosine_similarity=False, track_scheduled_lr=False,
+        track_pca=False, early_stopping=True, patience=4, weight_decay=0.05, optimizer=None, scheduler=None,
+        dataset_name="none"
 ):
-    assert model.__class__.__name__ in ['ViT', 'CNN', 'MLP', 'ResNet', 'DenseNet'], "Model must be ViT, CNN, ResNet, DenseNet or MLP"
-    optimizer, scheduler, criterion = _setup_training(model, learning_rate, epochs, weight_decay, optimizer=optimizer, scheduler=scheduler)
+    assert model.__class__.__name__ in ['ViT', 'CNN', 'MLP', 'ResNet',
+                                        'DenseNet'], "Model must be ViT, CNN, ResNet, DenseNet or MLP"
+    optimizer, scheduler, criterion = _setup_training(model, learning_rate, epochs, weight_decay, optimizer=optimizer,
+                                                      scheduler=scheduler)
 
     # Initialize lists for performance tracking
     train_losses, val_losses = [], []
     train_accuracies, val_accuracies = [], []
     scheduler_history = []
 
-    # Loss Landscape
-    model_dir = f'trainings/models_{model.__class__.__name__}_{dataset_name}/'
-    os.makedirs(model_dir, exist_ok=True)
+    # Loss Landscape ID
+    run_id = None
 
     # Initialize lists for embedding snapshot
     num_batches = len(train_loader)
     embedding_batch_interval = math.ceil(num_batches / embedding_records_per_epoch)
-    print(f"{num_batches} Batches, {embedding_records_per_epoch} Records per Epoch, Resulting Batch interval: {embedding_batch_interval}")
+    print(
+        f"{num_batches} Batches, {embedding_records_per_epoch} Records per Epoch, Resulting Batch interval: {embedding_batch_interval}")
     embedding_snapshots, embedding_snapshot_labels, embedding_indices = [], [], []
     embedding_counter = 0
 
     # Initialize lists for gradient tracking
     gradient_norms, max_gradients, grad_param_ratios, gradient_indices = [], [], [], []
-    gradient_counter = 0 # will track absolute batch index for x-axis
+    gradient_counter = 0  # will track absolute batch index for x-axis
 
     # Logging setup
     logging.basicConfig(level=logging.INFO, force=True)
@@ -78,7 +82,7 @@ def train_model_with_embedding_tracking(
             loss.backward()
 
             # Gradient Tracking
-            if track_gradients and (batch_idx % int(embedding_batch_interval/2) == 0):
+            if track_gradients and (batch_idx % int(embedding_batch_interval / 2) == 0):
                 grad_norm, max_grad, grad_ratio = _track_gradients(model)
                 gradient_norms.append(grad_norm)
                 max_gradients.append(max_grad)
@@ -106,7 +110,6 @@ def train_model_with_embedding_tracking(
                 model.train()
                 embedding_indices.append(embedding_counter)
                 embedding_counter += 1
-
 
             # Training metrics
             epoch_train_loss += loss.item()
@@ -148,8 +151,7 @@ def train_model_with_embedding_tracking(
             scheduler_history.append(learning_rate)
 
         # Loss Landscape: Save flattened model weights
-        weights = torch.nn.utils.parameters_to_vector(model.parameters()).detach().cpu()
-        torch.save(weights, os.path.join(model_dir, f'model-{epoch}.pt'))
+        run_id = _save_model(model, epoch, run_id)
 
         # Live plot update
         fig, axs = _live_plot_update(num_figures=num_figures)
@@ -157,7 +159,8 @@ def train_model_with_embedding_tracking(
 
         pos = 1
         if track_gradients:
-            _plot_gradients(axs[pos], gradient_indices, gradient_norms, max_gradients, grad_param_ratios, average_window_size)
+            _plot_gradients(axs[pos], gradient_indices, gradient_norms, max_gradients, grad_param_ratios,
+                            average_window_size)
             pos += 1
         if track_scheduled_lr and scheduler is not None:
             _plot_scheduled_lr(axs[pos], scheduler_history)
@@ -166,7 +169,8 @@ def train_model_with_embedding_tracking(
             _plot_embedding_drift(axs[pos], embedding_drifts)
             pos += 1
         if track_pca:
-            _plot_pca(axs[pos], embedding_snapshots, embedding_snapshot_labels, embedding_records_per_epoch, num_classes=num_classes)
+            _plot_pca(axs[pos], embedding_snapshots, embedding_snapshot_labels, embedding_records_per_epoch,
+                      num_classes=num_classes)
             pos += 1
         if track_cosine_similarity:
             # Todo: Implement cosine similarity tracking
@@ -195,7 +199,7 @@ def train_model_with_embedding_tracking(
 
         # Check if patience limit reached
         if early_stopping and patience_counter >= patience:
-            log_line=f"Early stopping triggered at epoch {epoch + 1}"
+            log_line = f"Early stopping triggered at epoch {epoch + 1}"
             log_history.append(log_line)
             print(log_line)
             break
@@ -217,9 +221,43 @@ def train_model_with_embedding_tracking(
         'max_gradients': max_gradients,
         'grad_param_ratios': grad_param_ratios,
         'scheduler_history': scheduler_history,
+        'll_flattened_weights_dir': run_id,
+        'model_info': repr(model)
     }
 
+
 from torch.nn import CrossEntropyLoss
+
+
+def _save_model(model, epoch, next_run=None):
+    """ Loss Landscape: Save flattened model weights """
+    import os, re
+
+    if next_run is None:
+        # list all entries in trainings/
+        entries = os.listdir('trainings')
+
+        # extract numbers from names like run-0001, run-0002, …
+        nums = [
+            int(m.group(1))
+            for e in entries
+            if (m := re.match(r'run-(\d+)-.*$', e))
+        ]
+
+        # determine next index
+        next_idx = max(nums) + 1 if nums else 1
+
+        # format and print
+        next_run_id = f"run-{next_idx:04d}-{model.__class__.__name__}"
+
+    dir_path = f'trainings/{next_run_id}/'
+    os.makedirs(dir_path, exist_ok=True)
+
+    weights = torch.nn.utils.parameters_to_vector(model.parameters()).detach().cpu()
+    torch.save(weights, os.path.join(dir_path, f'model-{epoch}.pt'))
+
+    return next_run_id
+
 
 def _setup_training(model, learning_rate, epochs, weight_decay, optimizer=None, scheduler=None):
     supported_models = ['ViT', 'CNN', 'MLP', 'ResNet', 'DenseNet']
@@ -237,12 +275,14 @@ def _setup_training(model, learning_rate, epochs, weight_decay, optimizer=None, 
     criterion = CrossEntropyLoss()
     return optimizer, scheduler, criterion
 
+
 def _live_plot_update(num_figures=1, ncols=2):
     plt.close('all')
     clear_output(wait=True)
     nrows = math.ceil(num_figures / ncols)
-    fig, axs = plt.subplots(nrows, ncols, figsize=(10, 4*nrows))
+    fig, axs = plt.subplots(nrows, ncols, figsize=(10, 4 * nrows))
     return fig, axs.flatten()
+
 
 def _track_gradients(model):
     """Tracks gradient norms and parameter ratios."""
@@ -260,13 +300,14 @@ def _track_gradients(model):
 
     return total_norm ** 0.5, max_grad, np.mean(ratios) if ratios else np.nan
 
+
 def _calculate_embedding_drift(embedding_snapshots, max_power=5):
     """
     Calculate embedding drift based on the snapshots.
     Drift is calculated as the mean Euclidean distance between snapshots.
     Uses skip steps as powers of 2 (i.e., 1, 2, 4, 8, ...).
     """
-    drifts = {2**n: [] for n in range(max_power)}
+    drifts = {2 ** n: [] for n in range(max_power)}
 
     # Iterate over all snapshots
     for i in range(1, len(embedding_snapshots)):
@@ -274,7 +315,7 @@ def _calculate_embedding_drift(embedding_snapshots, max_power=5):
 
         # Compare with previous snapshots using 2^n steps
         for n in range(max_power):
-            skip = 2**n
+            skip = 2 ** n
             if i - skip >= 0:
                 previous_snapshot = embedding_snapshots[i - skip]
                 drift = np.linalg.norm(current_snapshot - previous_snapshot, axis=1).mean()
@@ -284,6 +325,7 @@ def _calculate_embedding_drift(embedding_snapshots, max_power=5):
 
     return drifts
 
+
 def _plot_loss_accuracy(ax, epoch, epochs, train_losses, val_losses, train_accuracies, val_accuracies):
     """Plots loss and accuracy over epochs."""
     ax.set_title("Loss & Accuracy per Epoch")
@@ -292,9 +334,9 @@ def _plot_loss_accuracy(ax, epoch, epochs, train_losses, val_losses, train_accur
     ax.plot(epochs_range, val_losses, 'r-', label='Val Loss', alpha=0.7)
     ax.set_ylabel('Loss')
     ax.legend(loc='upper left')
-    #ax.set_xlim(1, epochs)  # Fixed x-axis
+    # ax.set_xlim(1, epochs)  # Fixed x-axis
     ax.set_ylim(0, max(val_losses + train_losses))  # Fixed range for loss
-    #ax.set_xticks(list(range(1, epochs + 1)))  # Integer ticks only
+    # ax.set_xticks(list(range(1, epochs + 1)))  # Integer ticks only
 
     ax2 = ax.twinx()
     ax2.plot(epochs_range, train_accuracies, 'g--', label='Train Acc', alpha=0.7)
@@ -302,6 +344,7 @@ def _plot_loss_accuracy(ax, epoch, epochs, train_losses, val_losses, train_accur
     ax2.set_ylabel('Accuracy')
     ax2.set_ylim(min(min(train_accuracies), min(val_accuracies)) * 0.9, 1.0)
     ax2.legend(loc='upper right')
+
 
 def _plot_gradients(ax, batch_indices, gradient_norms, max_gradients, grad_param_ratios, window_size):
     """Plots gradient norms and ratios."""
@@ -330,13 +373,16 @@ def _plot_gradients(ax, batch_indices, gradient_norms, max_gradients, grad_param
 
 from scipy.stats import pearsonr
 
+
 def _plot_scheduled_lr(ax, scheduler_history):
     ax.plot(scheduler_history, label='Learning Rate')
     ax.set_title("Learning Rate Schedule")
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Learning Rate")
 
-def _plot_pca(ax, embedding_snapshots, embedding_snapshot_labels, embedding_records_per_epoch, out_dim=2, num_classes=10, size=10):
+
+def _plot_pca(ax, embedding_snapshots, embedding_snapshot_labels, embedding_records_per_epoch, out_dim=2,
+              num_classes=10, size=10):
     """Plots the PCA of the embeddings in the last epoch."""
     from sklearn.decomposition import PCA
 
@@ -362,6 +408,7 @@ def _plot_pca(ax, embedding_snapshots, embedding_snapshot_labels, embedding_reco
             ax.scatter(projection[idx, 0], projection[idx, 1],
                        c=[color], marker=marker, label=str(i),
                        alpha=0.7, edgecolors='none', s=size)
+
 
 def visualization_drift_vs_embedding_drift(projections, embedding_drifts, verbose=True, embeddings=False):
     """
@@ -425,6 +472,7 @@ def visualization_drift_vs_embedding_drift(projections, embedding_drifts, verbos
 
     return mean_correlation
 
+
 def _plot_embedding_drift(ax, embedding_drifts, title="Embedding Drift", max_multiply=1.1):
     """Plots embedding drift."""
     colors = ['green', 'blue', 'orange', 'red', 'purple']
@@ -443,26 +491,28 @@ def _plot_embedding_drift(ax, embedding_drifts, title="Embedding Drift", max_mul
     ax.set_xlabel("Snapshot Index")
     ax.legend(loc='upper right')
 
+
 def _moving_average(data, window_size):
     """Calculate the moving average with a specified window size."""
     if len(data) < window_size:
         return data  # Not enough data points to calculate the average
     return np.convolve(data, np.ones(window_size) / window_size, mode='valid')
 
+
 def generate_projections(
-    embeddings_list,
-    method='tsne',
-    pca_fit_basis='first',
-    max_frames=None,
-    reverse_computation=False,
-    random_state=42,
-    tsne_init='pca', #'pca' or 'random'
-    tsne_perplexity=30.0, # often between 5–50
-    umap_n_neighbors=15,
-    umap_min_dist=0.1,
-    metric='euclidean', # for umap and tsne
-    window_size=10,
-    out_dim=2 #2D vs 3D
+        embeddings_list,
+        method='tsne',
+        pca_fit_basis='first',
+        max_frames=None,
+        reverse_computation=False,
+        random_state=42,
+        tsne_init='pca',  # 'pca' or 'random'
+        tsne_perplexity=30.0,  # often between 5–50
+        umap_n_neighbors=15,
+        umap_min_dist=0.1,
+        metric='euclidean',  # for umap and tsne
+        window_size=10,
+        out_dim=2  # 2D vs 3D
 ):
     from sklearn.decomposition import PCA
     from sklearn.manifold import TSNE
@@ -499,7 +549,7 @@ def generate_projections(
 
         for i in range(max_frames):
             window_start = max(0, i - window_size + 1)
-            window_data = np.concatenate(embeddings_list[window_start:i+1], axis=0)
+            window_data = np.concatenate(embeddings_list[window_start:i + 1], axis=0)
             reducer = PCA(n_components=out_dim)
             reducer.fit(window_data)
 
@@ -528,18 +578,21 @@ def generate_projections(
             projections.append(reducer.transform(embeddings_list[i]))
 
     elif method == 'tsne':
-        tsne = TSNE(n_components=out_dim, init=tsne_init, perplexity=tsne_perplexity, random_state=random_state, metric=metric)
+        tsne = TSNE(n_components=out_dim, init=tsne_init, perplexity=tsne_perplexity, random_state=random_state,
+                    metric=metric)
         tsne.fit(basis_data)
         if reverse_computation:
             projections = [None] * max_frames
             projections[-1] = tsne.fit_transform(embeddings_list[max_frames - 1])
             for i in range(max_frames - 2, -1, -1):
-                tsne = TSNE(n_components=out_dim, init=projections[i + 1], perplexity=tsne_perplexity, random_state=random_state, metric=metric)
+                tsne = TSNE(n_components=out_dim, init=projections[i + 1], perplexity=tsne_perplexity,
+                            random_state=random_state, metric=metric)
                 projections[i] = tsne.fit_transform(embeddings_list[i])
         else:
             projections.append(tsne.fit_transform(embeddings_list[0]))
             for i in range(1, max_frames):
-                tsne = TSNE(n_components=out_dim, init=projections[-1], perplexity=tsne_perplexity, random_state=random_state, metric=metric)
+                tsne = TSNE(n_components=out_dim, init=projections[-1], perplexity=tsne_perplexity,
+                            random_state=random_state, metric=metric)
                 projections.append(tsne.fit_transform(embeddings_list[i]))
 
     elif method == 'umap':
@@ -592,18 +645,19 @@ def denoise_projections(projections, blend=0.5, window_size=5, mode='window'):
 
     return denoised_projections
 
+
 def animate_projections(
-    projections,
-    labels,
-    interpolate=False,
-    steps_per_transition=10,
-    frame_interval=50,
-    figsize=(4, 4),
-    dot_size=5,
-    alpha=0.7,
-    cmap='tab10',
-    title_base='Embedding Evolution',
-    axis_lim=None
+        projections,
+        labels,
+        interpolate=False,
+        steps_per_transition=10,
+        frame_interval=50,
+        figsize=(4, 4),
+        dot_size=5,
+        alpha=0.7,
+        cmap='tab10',
+        title_base='Embedding Evolution',
+        axis_lim=None
 ):
     import numpy as np
     import matplotlib.pyplot as plt
@@ -648,6 +702,7 @@ def animate_projections(
     )
 
     return ani
+
 
 def show_with_slider(
         projections,
@@ -742,18 +797,19 @@ def show_with_slider(
 
 
 def show_multiple_projections_with_slider(
-    projections_list,
-    labels,
-    titles=None,
-    figsize_per_plot=(5, 5),
-    dot_size=5,
-    alpha=0.6,
-    interpolate=False,
-    steps_per_transition=10,
-    shared_axes=True,
-    dataset=None
+        projections_list,
+        labels,
+        titles=None,
+        figsize_per_plot=(5, 5),
+        dot_size=5,
+        alpha=0.6,
+        interpolate=False,
+        steps_per_transition=10,
+        shared_axes=True,
+        dataset=None
 ):
-    from vision_classification import get_text_labels, get_cifar100_fine_to_coarse_labels, get_cifar100_coarse_to_fine_labels
+    from vision_classification import get_text_labels, get_cifar100_fine_to_coarse_labels, \
+        get_cifar100_coarse_to_fine_labels
     class_names = range(0, 100) if dataset is None else get_text_labels(dataset)
 
     if dataset == "cifar100":
@@ -802,7 +858,7 @@ def show_multiple_projections_with_slider(
         ax.set_xticks([])
         ax.set_yticks([])
 
-        title = titles[i] if titles and i < len(titles) else f"View {i+1}"
+        title = titles[i] if titles and i < len(titles) else f"View {i + 1}"
         ax.set_title(title)
 
         if dataset == "cifar100":
@@ -841,6 +897,7 @@ def show_multiple_projections_with_slider(
 
     out = widgets.interactive_output(update, {'frame_idx': slider_control})
     display(widgets.VBox([widgets.HBox([slider, slider_control]), out]))
+
 
 def _set_equal_aspect_limits(projections, ax, symmetric=True):
     all_proj = np.concatenate(projections, axis=0)
@@ -888,6 +945,7 @@ def _interpolate_projections(projections, steps_per_transition):
     interpolated.append(projections[-1])
     return np.array(interpolated)
 
+
 def _prepare_cifar100_plot_config(class_names, cmap='tab20'):
     from vision_classification import get_cifar100_coarse_to_fine_labels, get_cifar100_fine_to_coarse_labels
 
@@ -908,6 +966,7 @@ def _prepare_cifar100_plot_config(class_names, cmap='tab20'):
             plot_config[fine_idx] = {'color': color, 'marker': marker, 'coarse': coarse}
     return plot_config, fine_to_coarse
 
+
 def _compute_axis_limits(projections_list, shared=True):
     if shared:
         all_proj = np.concatenate([np.concatenate(p) for p in projections_list])
@@ -919,6 +978,7 @@ def _compute_axis_limits(projections_list, shared=True):
             max_val = np.max(np.abs(np.concatenate(p)))
             limits.append((-max_val, max_val))
         return limits
+
 
 def _create_cifar100_legend(ax, fine_index_to_plot_config, unique_labels, class_names, fine_to_coarse):
     from collections import defaultdict
