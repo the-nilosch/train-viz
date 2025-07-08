@@ -15,6 +15,8 @@ import logging
 import ipywidgets as widgets
 from IPython.display import display
 import torch.nn.functional as F
+from torch.optim import Adam, AdamW, SGD
+from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR
 
 marker_styles = ['o', 'p', '^', 'X', 'D', 'P', 'v', '<', '>', '*', "s"]
 
@@ -24,12 +26,13 @@ def train_model_with_embedding_tracking(
         epochs=10, learning_rate=0.001, embedding_records_per_epoch=10, average_window_size=30,
         track_gradients=True, track_embedding_drift=True, track_cosine_similarity=False, track_scheduled_lr=False,
         track_pca=False, early_stopping=True, patience=4, weight_decay=0.05, optimizer=None, scheduler=None,
-        dataset_name="none"
+        use_sam=False, rho=0.02
 ):
     assert model.__class__.__name__ in ['ViT', 'CNN', 'MLP', 'ResNet',
                                         'DenseNet'], "Model must be ViT, CNN, ResNet, DenseNet or MLP"
-    optimizer, scheduler, criterion = _setup_training(model, learning_rate, epochs, weight_decay, optimizer=optimizer,
-                                                      scheduler=scheduler)
+    optimizer, scheduler, criterion, train_config = _setup_training(model, learning_rate, epochs, weight_decay,
+                                                                    optimizer=optimizer, scheduler=scheduler,
+                                                                    use_sam=use_sam, rho=rho)
 
     # Initialize lists for performance tracking
     train_losses, val_losses = [], []
@@ -73,15 +76,37 @@ def train_model_with_embedding_tracking(
         model.train()
         epoch_train_loss, correct_train, total_train = 0, 0, 0
 
+        gradient_counter = 0
+        embedding_counter = 0
+
         for batch_idx, (data, target) in enumerate(train_loader):
             data, target = data.to(device), target.to(device)
 
-            optimizer.zero_grad()
-            output = model(data)
-            loss = criterion(output, target)
-            loss.backward()
+            if use_sam:
+                def closure():
+                    optimizer.zero_grad()
+                    out = model(data)
+                    loss = criterion(out, target)
+                    loss.backward()
+                    return loss
 
-            # Gradient Tracking
+                # SAM runs closure twice inside step
+                loss = optimizer.step(closure)
+
+                # After SAM update, need fresh output for metrics
+                with torch.no_grad():
+                    output = model(data)
+
+            else:
+                # Vanilla one-step
+                optimizer.zero_grad()
+                output = model(data)
+                loss = criterion(output, target)
+                loss.backward()
+                optimizer.step()
+
+
+            # 4) Gradient tracking (once per batch)
             if track_gradients and (batch_idx % int(embedding_batch_interval / 2) == 0):
                 grad_norm, max_grad, grad_ratio = _track_gradients(model)
                 gradient_norms.append(grad_norm)
@@ -90,9 +115,7 @@ def train_model_with_embedding_tracking(
                 gradient_indices.append(gradient_counter)
                 gradient_counter += 1
 
-            optimizer.step()
-
-            # Embedding Tracking
+            # 5) Embedding snapshots & drift
             if batch_idx % embedding_batch_interval == 0:
                 model.eval()
                 with torch.no_grad():
@@ -101,9 +124,11 @@ def train_model_with_embedding_tracking(
                         data_sub = data_sub.to(device)
                         _, emb = model(data_sub, return_embedding=True)
                         batch_embeddings.append(emb.cpu().numpy())
-                        batch_labels.append(np.array(target_sub.flatten()))
-                    embedding_snapshots.append(np.concatenate(batch_embeddings, axis=0))
-                    embedding_snapshot_labels.append(np.concatenate(batch_labels, axis=0))
+                        batch_labels.append(target_sub.numpy())
+                    snapshot = np.concatenate(batch_embeddings, axis=0)
+                    labels = np.concatenate(batch_labels, axis=0)
+                embedding_snapshots.append(snapshot)
+                embedding_snapshot_labels.append(labels)
 
                 if track_embedding_drift:
                     embedding_drifts = _calculate_embedding_drift(embedding_snapshots)
@@ -111,11 +136,11 @@ def train_model_with_embedding_tracking(
                 embedding_indices.append(embedding_counter)
                 embedding_counter += 1
 
-            # Training metrics
-            epoch_train_loss += loss.item()
-            _, preds = torch.max(output, dim=1)
-            correct_train += (preds == target).sum().item()
-            total_train += target.size(0)
+                # Metrics (same for both)
+                _, preds = torch.max(output, dim=1)
+                correct_train += (preds == target).sum().item()
+                total_train += target.size(0)
+                epoch_train_loss += loss.item()
 
         # === Epoch-wise accuracy ===
         train_loss = epoch_train_loss / len(train_loader)
@@ -222,18 +247,19 @@ def train_model_with_embedding_tracking(
         'grad_param_ratios': grad_param_ratios,
         'scheduler_history': scheduler_history,
         'll_flattened_weights_dir': run_id,
-        'model_info': repr(model)
+        'model_info': repr(model),
+        'train_config': train_config
     }
 
 
 from torch.nn import CrossEntropyLoss
 
 
-def _save_model(model, epoch, next_run=None):
+def _save_model(model, epoch, next_run_id=None):
     """ Loss Landscape: Save flattened model weights """
     import os, re
 
-    if next_run is None:
+    if next_run_id is None:
         # list all entries in trainings/
         entries = os.listdir('trainings')
 
@@ -249,6 +275,7 @@ def _save_model(model, epoch, next_run=None):
 
         # format and print
         next_run_id = f"run-{next_idx:04d}-{model.__class__.__name__}"
+        print(f'Saving model to trainings/{next_run_id}')
 
     dir_path = f'trainings/{next_run_id}/'
     os.makedirs(dir_path, exist_ok=True)
@@ -259,21 +286,83 @@ def _save_model(model, epoch, next_run=None):
     return next_run_id
 
 
-def _setup_training(model, learning_rate, epochs, weight_decay, optimizer=None, scheduler=None):
-    supported_models = ['ViT', 'CNN', 'MLP', 'ResNet', 'DenseNet']
+def _setup_training(model, learning_rate, epochs, weight_decay, use_sam=False, optimizer=None, scheduler=None,
+                    rho=0.02):
+    supported = ['ViT', 'CNN', 'MLP', 'ResNet', 'DenseNet']
     model_name = model.__class__.__name__
-    assert model_name in supported_models, f"Model must be one of: {supported_models}"
+    assert model_name in supported, f"Model must be one of: {supported}"
 
-    if model_name == 'MLP':
-        optimizer = optimizer or torch.optim.Adam(model.parameters(), lr=learning_rate)
-        scheduler = scheduler or torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+    # 1) Select base optimizer if not provided
+    if optimizer is None:
+        if model_name == 'MLP':
+            base_opt = Adam(model.parameters(),
+                            lr=learning_rate)
+        elif model_name == 'ViT':
+            base_opt = AdamW(model.parameters(),
+                             lr=learning_rate,
+                             weight_decay=weight_decay or 1e-2)
+        else:  # CNN, ResNet, DenseNet
+            base_opt = SGD(model.parameters(),
+                           lr=learning_rate,
+                           momentum=0.9,
+                           weight_decay=weight_decay or 1e-4)
+    else:
+        base_opt = optimizer
 
-    elif model_name in ['CNN', 'ViT', 'ResNet', 'DenseNet']:
-        optimizer = optimizer or torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        scheduler = scheduler or torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    # 2) Wrap in SAM if requested
+    if use_sam:
+        import sys
+        # ensure vendored sam/ is on path
+        this_dir = os.path.dirname(os.path.abspath(__file__))
+        sam_path = os.path.join(this_dir, "sam")
+        sys.path.insert(0, sam_path)
 
+        # Import the PyTorch‐SAMSGD wrapper
+        try:
+            from sam import SAMSGD
+        except (ImportError, ModuleNotFoundError) as e:
+            raise ImportError(
+                f"Could not import SAMSGD from {sam_path!r}: {e}\n"
+                "Make sure you've cloned the moskomule/sam.pytorch repo into `sam/`."
+            )
+
+        # Only valid if base_opt is SGD
+        if not isinstance(base_opt, SGD):
+            raise ValueError("SAMSGD can only wrap torch.optim.SGD")
+        optimizer = SAMSGD(
+            model.parameters(),
+            lr=learning_rate,
+            momentum=base_opt.defaults.get('momentum', 0.0),
+            dampening=base_opt.defaults.get('dampening', 0.0),
+            weight_decay=base_opt.defaults.get('weight_decay', 0.0),
+            nesterov=base_opt.defaults.get('nesterov', False),
+            rho=rho
+        )
+    else:
+        optimizer = base_opt
+
+    # 3) Select scheduler if not provided
+    if scheduler is None:
+        if model_name == 'MLP':
+            scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
+        else:
+            # For ViT you may add warmup externally; here we use plain cosine
+            scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
+
+    # 4) Loss
     criterion = CrossEntropyLoss()
-    return optimizer, scheduler, criterion
+
+    # 5) Build config string and print summary
+    opt_name = optimizer.__class__.__name__
+    sched_name = scheduler.__class__.__name__
+    config_string = (
+        f"{model_name}|opt={opt_name}|lr={learning_rate}"
+        f"|wd={weight_decay}|sam={use_sam}"
+    )
+    print(f"[Config] model={model_name}, optimizer={opt_name}, "
+          f"scheduler={sched_name}, use_SAM={use_sam}")
+
+    return optimizer, scheduler, criterion, config_string
 
 
 def _live_plot_update(num_figures=1, ncols=2):

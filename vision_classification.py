@@ -167,7 +167,7 @@ def init_mlp_for_dataset(dataset_name, hidden_dims=[128, 64], dropout=0.2):
 
 
 def init_cnn_for_dataset(dataset_name, conv_dims=[64, 128], kernel_sizes=[3, 3], hidden_dims=[128], dropout=0.2,
-                         use_residual=True):
+                         residual=True):
     if dataset_name == "mnist":
         input_channels = 1
         num_classes = 10
@@ -181,7 +181,7 @@ def init_cnn_for_dataset(dataset_name, conv_dims=[64, 128], kernel_sizes=[3, 3],
         raise ValueError(f"Unsupported dataset: {dataset_name}")
 
     return CNN(conv_dims=conv_dims, kernel_sizes=kernel_sizes, hidden_dims=hidden_dims, num_classes=num_classes,
-               input_channels=input_channels, dropout=dropout, use_residual=use_residual)
+               input_channels=input_channels, dropout=dropout, residual=residual)
 
 
 def init_vit_for_dataset(dataset_name, emb_dim=128, depth=6, num_heads=4, mlp_dim=256, dropout=0.1, patch_size=4):

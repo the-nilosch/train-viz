@@ -1,6 +1,22 @@
 # train-viz
 Visualizing the training
 
+### Venv
+
+Create:
+```
+python -m venv .venv
+```
+
+Activate:
+```
+source .venv/bin/activate
+```
+Windows:
+```
+source venv/Scripts/activate
+```
+
 
 ### Initialize Neuro-Visualizer
 ```
