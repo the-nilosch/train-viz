@@ -10,18 +10,18 @@ from IPython.display import clear_output
 import logging
 from torch.optim import Adam, AdamW, SGD
 from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR
+from sklearn.metrics import confusion_matrix
 
-import plots
-
-marker_styles = ['o', 'p', '^', 'X', 'D', 'P', 'v', '<', '>', '*', "s"]
+import helper.plots as plots
+import helper.visualization as visualization
 
 
 def train_model_with_embedding_tracking(
         model, train_loader, test_loader, subset_loader, device, num_classes,
         epochs=10, learning_rate=0.001, embedding_records_per_epoch=10, average_window_size=30,
         track_gradients=True, track_embedding_drift=True, track_cosine_similarity=False, track_scheduled_lr=False,
-        track_pca=False, early_stopping=True, patience=4, weight_decay=0.05, optimizer=None, scheduler=None,
-        use_sam=False, rho=0.02, save_model_weights_each_epoch=False
+        track_pca=False, track_confusion_matrix=False, early_stopping=True, patience=4, weight_decay=0.05,
+        optimizer=None, scheduler=None, use_sam=False, rho=0.02, save_model_weights_each_epoch=False
 ):
     assert model.__class__.__name__ in ['ViT', 'CNN', 'MLP', 'ResNet',
                                         'DenseNet'], "Model must be ViT, CNN, ResNet, DenseNet or MLP"
@@ -33,6 +33,7 @@ def train_model_with_embedding_tracking(
     train_losses, val_losses = [], []
     train_accuracies, val_accuracies = [], []
     scheduler_history = []
+    val_confusion_matrices = []
 
     # Loss Landscape ID
     run_id = None
@@ -122,7 +123,7 @@ def train_model_with_embedding_tracking(
                 embedding_snapshot_labels.append(labels)
 
                 if track_embedding_drift:
-                    embedding_drifts = _calculate_embedding_drift(embedding_snapshots)
+                    embedding_drifts = visualization.calculate_embedding_drift(embedding_snapshots)
                 model.train()
                 embedding_indices.append(embedding_counter)
                 embedding_counter += 1
@@ -141,19 +142,26 @@ def train_model_with_embedding_tracking(
 
         # === Validation phase ===
         model.eval()
-        epoch_val_loss, correct_val, total_val = 0, 0, 0
+        all_preds = []
+        all_targets = []
+        epoch_val_loss = 0
         with torch.no_grad():
             for data, target in test_loader:
                 data, target = data.to(device), target.to(device)
-                output, embedding = model(data, return_embedding=True)
-                loss = criterion(output, target)
-                epoch_val_loss += loss.item()
-                _, preds = torch.max(output, dim=1)
-                correct_val += (preds == target).sum().item()
-                total_val += target.size(0)
+                output, _ = model(data, return_embedding=True)
+                epoch_val_loss += criterion(output, target).item()
+                _, preds = torch.max(output, 1)
+                all_preds.extend(preds.cpu().tolist())
+                all_targets.extend(target.cpu().tolist())
 
         val_loss = epoch_val_loss / len(test_loader)
-        val_acc = correct_val / total_val
+        # standard accuracy
+        val_acc = sum(p == t for p, t in zip(all_preds, all_targets)) / len(all_targets)
+
+        # **new**: compute and store confusion matrix
+        cm = confusion_matrix(all_targets, all_preds, labels=list(range(num_classes)))
+        val_confusion_matrices.append(cm)
+
         val_losses.append(val_loss)
         val_accuracies.append(val_acc)
 
@@ -184,6 +192,9 @@ def train_model_with_embedding_tracking(
             pos += 1
         if track_embedding_drift:
             plots.plot_embedding_drift(axs[pos], embedding_drifts)
+            pos += 1
+        if track_confusion_matrix:
+            plots.plot_confusion_matrix(axs[pos], val_confusion_matrices[-1], classes=list(range(num_classes)))
             pos += 1
         if track_pca:
             plots.plot_pca(axs[pos], embedding_snapshots, embedding_snapshot_labels, embedding_records_per_epoch,
@@ -231,6 +242,7 @@ def train_model_with_embedding_tracking(
         'val_losses': val_losses,
         'train_accuracies': train_accuracies,
         'val_accuracies': val_accuracies,
+        'val_confusion_matrices': val_confusion_matrices,
         'subset_embeddings': embedding_snapshots,
         'subset_labels': embedding_snapshot_labels,
         'embedding_drifts': embedding_drifts,
@@ -250,7 +262,7 @@ def _save_model(model, epoch, next_run_id=None):
 
     if next_run_id is None:
         # list all entries in trainings/
-        entries = os.listdir('../trainings')
+        entries = os.listdir('trainings')
 
         # extract numbers from names like run-0001, run-0002, …
         nums = [

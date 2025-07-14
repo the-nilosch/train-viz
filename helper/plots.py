@@ -6,6 +6,7 @@ import matplotlib.lines as mlines
 
 import ipywidgets as widgets
 from IPython.display import display
+from sklearn.metrics import ConfusionMatrixDisplay
 
 import helper.visualization
 
@@ -62,6 +63,44 @@ def plot_scheduled_lr(ax, scheduler_history):
     ax.set_title("Learning Rate Schedule")
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Learning Rate")
+
+
+def plot_confusion_matrix(ax, cm, classes, normalize: bool = False):
+    """
+    Plots a confusion matrix on the given Axes.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        The axes to draw the matrix onto.
+    cm : array-like of shape (n_classes, n_classes)
+        The confusion matrix to display.
+    classes : list of str or int
+        Display labels for the rows and columns.
+    normalize : bool, default=False
+        If True, normalize each row to sum to 1.
+    """
+    # 1) normalize if requested
+    if normalize:
+        row_sums = cm.sum(axis=1, keepdims=True)
+        cm = cm.astype('float') / np.where(row_sums == 0, 1, row_sums)
+
+    # 2) create the display
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=classes)
+    disp.plot(
+        ax=ax,
+        cmap=plt.cm.Blues,
+        xticks_rotation=45,
+        values_format='.2f' if normalize else 'd',
+        colorbar=False     # turn off auto colorbar
+    )
+    ax.set_title("Confusion Matrix")
+
+    # 3) add a custom colorbar
+    fig = ax.figure
+    cbar = fig.colorbar(disp.im_, ax=ax)
+    # push ticks a bit outward, so they don't overlap the axis
+    cbar.ax.yaxis.set_tick_params(pad=0)
 
 
 def plot_pca(ax, embedding_snapshots, embedding_snapshot_labels, embedding_records_per_epoch, out_dim=2,
