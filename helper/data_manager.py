@@ -37,8 +37,8 @@ def flatten_and_convert(data, parent_key='', sep='#'):
 
 
 def save_training_data(run_id, result_dict):
-    os.makedirs("trainings", exist_ok=True)
-    file_path = os.path.join("trainings", f"{run_id}.h5")
+    os.makedirs("../trainings", exist_ok=True)
+    file_path = os.path.join("../trainings", f"{run_id}.h5")
 
     # Flatten and preprocess the result_dict
     result_dict = flatten_and_convert(result_dict)
@@ -77,7 +77,7 @@ def unflatten_dict(flat_dict, sep='#'):
 
 
 def load_training_data(run_id):
-    file_path = os.path.join("trainings", f"{run_id}.h5")
+    file_path = os.path.join("../trainings", f"{run_id}.h5")
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"No file found at {file_path}")
 

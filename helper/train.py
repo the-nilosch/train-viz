@@ -250,7 +250,7 @@ def _save_model(model, epoch, next_run_id=None):
 
     if next_run_id is None:
         # list all entries in trainings/
-        entries = os.listdir('trainings')
+        entries = os.listdir('../trainings')
 
         # extract numbers from names like run-0001, run-0002, …
         nums = [

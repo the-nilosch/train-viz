@@ -120,7 +120,7 @@ def show_with_slider(
         show_legend=False,
         symmetric=False
 ):
-    from vision_classification import get_text_labels
+    from helper.vision_classification import get_text_labels
     class_names = range(0, 100) if dataset is None else get_text_labels(dataset)
 
     projections = np.array(projections)
@@ -214,8 +214,7 @@ def show_multiple_projections_with_slider(
         axes=None,
         fig=None
 ):
-    from vision_classification import get_text_labels, get_cifar100_fine_to_coarse_labels, \
-        get_cifar100_coarse_to_fine_labels
+    from helper.vision_classification import get_text_labels
     class_names = range(0, 100) if dataset is None else get_text_labels(dataset)
 
     if dataset == "cifar100":
@@ -357,7 +356,7 @@ def _interpolate_projections(projections, steps_per_transition):
 
 
 def _prepare_cifar100_plot_config(class_names, cmap='tab20'):
-    from vision_classification import get_cifar100_coarse_to_fine_labels, get_cifar100_fine_to_coarse_labels
+    from helper.vision_classification import get_cifar100_coarse_to_fine_labels, get_cifar100_fine_to_coarse_labels
 
     coarse_to_fine = get_cifar100_coarse_to_fine_labels()
     fine_to_coarse = get_cifar100_fine_to_coarse_labels()
@@ -427,7 +426,7 @@ def adjust_visualization_speed(projections, embedding_drifts, drift_key):
         list of np.ndarray: Adjusted projections with aligned speed.
     """
     # Extract the target drift
-    from visualization import calculate_embedding_drift
+    from helper.visualization import calculate_embedding_drift
 
     target_drift = np.asarray(embedding_drifts[drift_key]).flatten()
     scaling_difference = np.median(
@@ -474,7 +473,7 @@ def filter_classes(projections, labels, selected_classes):
 
 
 def show_cifar100_legend(dot_size=6, figsize=(8, 6), ncol=4, cmap='tab20'):
-    from vision_classification import get_text_labels
+    from helper.vision_classification import get_text_labels
     import matplotlib.lines as mlines
     import matplotlib.pyplot as plt
     from collections import defaultdict
@@ -533,7 +532,7 @@ def show_with_slider_3d(
         dataset=None,
         show_legend=False  # placeholder for symmetry
 ):
-    from vision_classification import get_text_labels
+    from helper.vision_classification import get_text_labels
     class_names = range(0, 100) if dataset is None else get_text_labels(dataset)
     projections = np.array(projections)
     projections = _interpolate_projections(projections, steps_per_transition) if interpolate else projections
