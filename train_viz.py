@@ -26,7 +26,7 @@ def train_model_with_embedding_tracking(
         epochs=10, learning_rate=0.001, embedding_records_per_epoch=10, average_window_size=30,
         track_gradients=True, track_embedding_drift=True, track_cosine_similarity=False, track_scheduled_lr=False,
         track_pca=False, early_stopping=True, patience=4, weight_decay=0.05, optimizer=None, scheduler=None,
-        use_sam=False, rho=0.02
+        use_sam=False, rho=0.02, save_model_weights_each_epoch=False
 ):
     assert model.__class__.__name__ in ['ViT', 'CNN', 'MLP', 'ResNet',
                                         'DenseNet'], "Model must be ViT, CNN, ResNet, DenseNet or MLP"
@@ -76,9 +76,6 @@ def train_model_with_embedding_tracking(
         model.train()
         epoch_train_loss, correct_train, total_train = 0, 0, 0
 
-        gradient_counter = 0
-        embedding_counter = 0
-
         for batch_idx, (data, target) in enumerate(train_loader):
             data, target = data.to(device), target.to(device)
 
@@ -104,7 +101,6 @@ def train_model_with_embedding_tracking(
                 loss = criterion(output, target)
                 loss.backward()
                 optimizer.step()
-
 
             # 4) Gradient tracking (once per batch)
             if track_gradients and (batch_idx % int(embedding_batch_interval / 2) == 0):
@@ -176,7 +172,8 @@ def train_model_with_embedding_tracking(
             scheduler_history.append(learning_rate)
 
         # Loss Landscape: Save flattened model weights
-        run_id = _save_model(model, epoch, run_id)
+        if save_model_weights_each_epoch:
+            run_id = _save_model(model, epoch, run_id)
 
         # Live plot update
         fig, axs = _live_plot_update(num_figures=num_figures)
@@ -327,8 +324,8 @@ def _setup_training(model, learning_rate, epochs, weight_decay, use_sam=False, o
             )
 
         # Only valid if base_opt is SGD
-        if not isinstance(base_opt, SGD):
-            raise ValueError("SAMSGD can only wrap torch.optim.SGD")
+        #if not isinstance(base_opt, SGD):
+        #    raise ValueError("SAMSGD can only wrap torch.optim.SGD")
         optimizer = SAMSGD(
             model.parameters(),
             lr=learning_rate,
@@ -499,7 +496,8 @@ def _plot_pca(ax, embedding_snapshots, embedding_snapshot_labels, embedding_reco
                        alpha=0.7, edgecolors='none', s=size)
 
 
-def visualization_drift_vs_embedding_drift(projections, embedding_drifts, verbose=True, embeddings=False):
+def visualization_drift_vs_embedding_drift(projections, embedding_drifts, verbose=True, embeddings=False,
+                                           figsize=(10, 3), on_ax=None):
     """
     Visualizes the drift of embeddings and computes the Pearson correlation between
     visualization drift and high-dimensional embedding drift for each data series.
@@ -512,10 +510,12 @@ def visualization_drift_vs_embedding_drift(projections, embedding_drifts, verbos
             array of drift measurements.
         verbose (bool): If True, prints the correlation values for each series and the mean correlation.
         embeddings (bool): If True, compute the embedding drift per each series.
+        figsize (tuple): Size of the figure
 
     Returns:
         float: Mean Pearson correlation between visualization drift and embedding drift
             across all data series.
+        array: In special Case it's a 1D array with series correlations
     """
     if embeddings:
         embedding_drifts = _calculate_embedding_drift(embedding_drifts)
@@ -526,7 +526,8 @@ def visualization_drift_vs_embedding_drift(projections, embedding_drifts, verbos
     visualization_drifts = _calculate_embedding_drift(projections)
 
     # Ensure embedding_drifts and visualization_drifts have the same length
-    assert len(embedding_drifts) == len(visualization_drifts), "Mismatch in drift lengths."
+    assert len(visualization_drifts) == len(embedding_drifts),\
+        f"Mismatch in drift lengths. Vis: {len(visualization_drifts)} vs Emb: {len(embedding_drifts)}"
 
     # Calculate correlation per data series and store in a list
     correlations = []
@@ -542,6 +543,7 @@ def visualization_drift_vs_embedding_drift(projections, embedding_drifts, verbos
         vis_drift = vis_drift[valid_mask]
 
         # Calculate Pearson correlation
+        assert len(emb_drift) == len(vis_drift), f"Mismatch in Length {len(emb_drift)} vs {len(vis_drift)}"
         correlation, _ = pearsonr(emb_drift, vis_drift)
         correlations.append(correlation)
         if verbose:
@@ -549,10 +551,16 @@ def visualization_drift_vs_embedding_drift(projections, embedding_drifts, verbos
 
     # Calculate and print mean correlation
     mean_correlation = np.mean(correlations)
+
+    if on_ax is not None:
+        # Part of larger Plot
+        _plot_embedding_drift(on_ax, visualization_drifts, title="Visualization Drift")
+        return correlations
+
     if verbose:
         print(f"Mean Correlation: {mean_correlation:.4f}")
 
-        fig, axs = plt.subplots(1, 2, figsize=(10, 3))
+        fig, axs = plt.subplots(1, 2, figsize=figsize)
         _plot_embedding_drift(axs[0], visualization_drifts, title="Visualization Drift")
         _plot_embedding_drift(axs[1], embedding_drifts)
 
@@ -581,6 +589,55 @@ def _plot_embedding_drift(ax, embedding_drifts, title="Embedding Drift", max_mul
     ax.legend(loc='upper right')
 
 
+def show_projections_and_drift(projections_list, titles, labels, embedding_drifts, embeddings=False, interpolate=False,
+                               steps_per_transition=5, figsize_embedding_drift=(6, 4), figsize_visualization=(4, 4),
+                               shared_axes=False, dot_size=5, alpha=0.6, dataset=None):
+    """
+    Combined static figure with:
+    - Left: multiple projection snapshots at chosen frame (slider)
+    - Right: embedding vs visualization drift plot
+    """
+    if embeddings:
+        embedding_drifts = _calculate_embedding_drift(embedding_drifts) # MAY NOT BE NEEDED
+
+    nrows = len(projections_list)
+    fig, axes = plt.subplots(nrows, 2, figsize=(10, 4 * nrows))
+    axes_left = axes[:, 0]
+    axes_right = axes[:, 1]
+
+    # Show projection snapshots
+    show_multiple_projections_with_slider(
+        projections_list,
+        labels,
+        titles=titles,
+        figsize_per_plot=figsize_visualization,
+        dot_size=dot_size,
+        alpha=alpha,
+        interpolate=interpolate,
+        steps_per_transition=steps_per_transition,
+        shared_axes=shared_axes,
+        dataset=dataset,
+        axes=axes_left,
+        fig=fig
+    )
+
+    # Calculate Visualization Drifts
+    correlations_list = []
+    for i, projection in enumerate(projections_list):
+        correlations_list.append(
+            visualization_drift_vs_embedding_drift(projection,
+                                               embedding_drifts,
+                                               verbose=False,
+                                               embeddings=embeddings,
+                                               figsize=figsize_embedding_drift,
+                                               on_ax=axes_right[i]))
+
+    plt.show()
+    correlation_means = [np.mean(corrs) for corrs in correlations_list]
+    for i in range(nrows):
+        print(f"{titles[i]}: {correlation_means[i]} = {correlations_list[i]}")
+
+
 def _moving_average(data, window_size):
     """Calculate the moving average with a specified window size."""
     if len(data) < window_size:
@@ -597,6 +654,7 @@ def generate_projections(
         random_state=42,
         tsne_init='pca',  # 'pca' or 'random'
         tsne_perplexity=30.0,  # often between 5–50
+        tsne_update=1,
         umap_n_neighbors=15,
         umap_min_dist=0.1,
         metric='euclidean',  # for umap and tsne
@@ -674,15 +732,17 @@ def generate_projections(
             projections = [None] * max_frames
             projections[-1] = tsne.fit_transform(embeddings_list[max_frames - 1])
             for i in range(max_frames - 2, -1, -1):
-                tsne = TSNE(n_components=out_dim, init=projections[i + 1], perplexity=tsne_perplexity,
+                tsne = TSNE(n_components=out_dim, init=projections[i+1], perplexity=tsne_perplexity,
                             random_state=random_state, metric=metric)
-                projections[i] = tsne.fit_transform(embeddings_list[i])
+                new = tsne.fit_transform(embeddings_list[i]) * tsne_update + projections[i+1] * (1 - tsne_update)
+                projections[i] = tsne.fit_transform(new)
         else:
             projections.append(tsne.fit_transform(embeddings_list[0]))
             for i in range(1, max_frames):
                 tsne = TSNE(n_components=out_dim, init=projections[-1], perplexity=tsne_perplexity,
                             random_state=random_state, metric=metric)
-                projections.append(tsne.fit_transform(embeddings_list[i]))
+                new = tsne.fit_transform(embeddings_list[i]) * tsne_update + projections[-1] * (1 - tsne_update)
+                projections.append(new)
 
     elif method == 'umap':
         reducer = umap.UMAP(n_components=out_dim, n_neighbors=umap_n_neighbors, min_dist=umap_min_dist, metric=metric)
@@ -714,7 +774,7 @@ def denoise_projections(projections, blend=0.5, window_size=5, mode='window'):
         list of np.ndarray: Smoothed projections.
     """
     assert 0 <= blend <= 1, "Blend must be in [0, 1]"
-    assert mode in ['exponential', 'window'], "Mode must be 'causal' or 'window'"
+    assert mode in ['exponential', 'window'], "Mode must be 'exponential' or 'window'"
 
     num_frames = len(projections)
     denoised_projections = []
@@ -895,7 +955,9 @@ def show_multiple_projections_with_slider(
         interpolate=False,
         steps_per_transition=10,
         shared_axes=True,
-        dataset=None
+        dataset=None,
+        axes=None,
+        fig=None
 ):
     from vision_classification import get_text_labels, get_cifar100_fine_to_coarse_labels, \
         get_cifar100_coarse_to_fine_labels
@@ -927,13 +989,16 @@ def show_multiple_projections_with_slider(
         ncols = math.ceil(math.sqrt(num_views))
         nrows = math.ceil(num_views / ncols)
 
-    fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(figsize_per_plot[0] * ncols, figsize_per_plot[1] * nrows))
-    axes = np.array(axes).reshape(-1)
+    if axes is None:
+        fig, axes = plt.subplots(nrows, ncols,
+                                 figsize=(figsize_per_plot[0] * ncols, figsize_per_plot[1] * nrows))
+        axes = np.array(axes).reshape(-1)
 
-    for ax in axes[num_views:]:
-        fig.delaxes(ax)
-    axes = axes[:num_views]
+        for ax in axes[num_views:]:
+            fig.delaxes(ax)
+        axes = axes[:num_views]
+
+    assert fig is not None, "When passing axes, it also needs a figure"
 
     # Axis limits
     axis_limits = _compute_axis_limits(projections_list, shared=shared_axes)

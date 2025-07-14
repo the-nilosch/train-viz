@@ -17,6 +17,30 @@ Windows:
 source venv/Scripts/activate
 ```
 
+Saved packages:
+```
+pip freeze | grep -v '^\-e' | sed '/ @ /d' > requirements.txt
+conda env export --no-builds > reuqirements.yml
+```
+
+### Second Environment for PHATE
+
+```
+conda create -n phate-env python=3.10
+
+conda activate phate-env
+
+conda install numpy=1.24 pandas=1.5
+pip install phate m-phate
+
+pip install -r requirements-phate-env.txt
+```
+
+Saved packages:
+```
+pip freeze | grep -v '^\-e' | sed '/ @ /d' > requirements-phate-env.txt
+conda env export --no-builds > phate-env.yml
+```
 
 ### Initialize Neuro-Visualizer
 ```

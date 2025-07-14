@@ -4,7 +4,7 @@ import os
 
 
 def flatten_and_convert(data, parent_key='', sep='#'):
-    """ Recursively flattens a nested dictionary and converts lists to numpy arrays if numeric. """
+    """ Recursively flattens a nested dictionary and converts lists to numpy arrays if numeric, and keeps strings. """
     items = []
     for k, v in data.items():
         new_key = f"{parent_key}{sep}{k}" if parent_key else k
@@ -15,20 +15,20 @@ def flatten_and_convert(data, parent_key='', sep='#'):
 
         # Handle lists
         elif isinstance(v, list):
-            # If the list is numeric, convert to numpy array
             if all(isinstance(i, (int, float, np.integer, np.floating)) for i in v):
                 v = np.array(v, dtype=np.float32)
                 items.append((new_key, v))
             elif all(isinstance(i, np.ndarray) for i in v):
-                # Keep lists of numpy arrays as they are
                 items.append((new_key, v))
             else:
                 print(f"Skipping list at key '{new_key}': Mixed or unsupported types.")
 
-        # If already a numpy array or scalar
+        # Scalars
         elif isinstance(v, (int, float, np.integer, np.floating)):
             items.append((new_key, np.array([v], dtype=np.float32)))
         elif isinstance(v, np.ndarray):
+            items.append((new_key, v))
+        elif isinstance(v, str):
             items.append((new_key, v))
         else:
             print(f"Skipping key '{new_key}': Unsupported type {type(v)}")
@@ -54,6 +54,10 @@ def save_training_data(run_id, result_dict):
                 f.create_dataset(key, data=value)
             elif isinstance(value, (int, float)):
                 f.create_dataset(key, data=np.array([value]))
+            elif isinstance(value, str):
+                # Store string as a special dataset with dtype 'S' (fixed ASCII) or 'utf-8'
+                dt = h5py.string_dtype(encoding='utf-8')
+                f.create_dataset(key, data=value, dtype=dt)
             else:
                 print(f"Skipping key '{key}': Unsupported data format: {type(value)}")
 
@@ -62,6 +66,8 @@ def unflatten_dict(flat_dict, sep='#'):
     """ Reconstruct nested dictionary from a flattened dictionary. """
     unflattened = {}
     for k, v in flat_dict.items():
+        if isinstance(v, bytes):
+            v = v.decode('utf-8')
         keys = k.split(sep)
         d = unflattened
         for key in keys[:-1]:
@@ -78,20 +84,23 @@ def load_training_data(run_id):
     data = {}
 
     with h5py.File(file_path, "r") as f:
-        def read_dataset(name, obj):
-            """ Read datasets and groups recursively. """
-            if isinstance(obj, h5py.Dataset):
-                data[name] = np.array(obj)
-            elif isinstance(obj, h5py.Group):
-                # Handle groups as lists of datasets
+        def read_group(name, obj):
+            if isinstance(obj, h5py.Group):
+                # Read group ONCE as a list of its datasets
                 group_data = []
-                # Sort keys as integers
                 sorted_keys = sorted(obj.keys(), key=lambda x: int(x) if x.isdigit() else x)
                 for key in sorted_keys:
                     group_data.append(np.array(obj[key]))
                 data[name] = group_data
+            elif isinstance(obj, h5py.Dataset):
+                # Only add dataset if its parent is NOT in data
+                parent = '/'.join(name.split('/')[:-1])
+                if parent not in data:
+                    val = obj[()]
+                    if isinstance(val, bytes):
+                        val = val.decode('utf-8')
+                    data[name] = val
 
-        f.visititems(read_dataset)
+        f.visititems(read_group)
 
-    # Reconstruct the nested dictionary
     return unflatten_dict(data)
