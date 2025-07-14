@@ -1,11 +1,155 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from pyparsing import results
 from scipy.stats import pearsonr
 from tqdm.notebook import tqdm
 
-import plots
+import helper.plots as plots
+from helper.data_manager import load_training_data
 
 marker_styles = ['o', 'p', '^', 'X', 'D', 'P', 'v', '<', '>', '*', "s"]
+
+class Run:
+    def __init__(self, run_id: str, dataset: str):
+        self.run_id = run_id
+        self.dataset = dataset
+
+        self.results = self.load()
+        self.embedding_drifts = self.results['embedding_drifts']
+        self.embeddings = self.results["subset_embeddings"]
+        self.labels = self.results["subset_labels"]
+
+    def load(self):
+        loaded_results = load_training_data(self.run_id)
+        loaded_results["embedding_drifts"] = {int(k): loaded_results["embedding_drifts"][k] for k in
+                                       sorted(loaded_results["embedding_drifts"].keys(), key=int)}
+        return loaded_results
+
+    def plot_training_records(self):
+        fig, axs = plt.subplots(2, 2, figsize=(10, 8))
+        epochs = len(self.results["train_losses"])
+
+        plots.plot_loss_accuracy(axs[0][0], epochs - 1, epochs, self.results["train_losses"], self.results["val_losses"],
+                           self.results["train_accuracies"], self.results["val_accuracies"])
+        plots.plot_gradients(axs[0][1], range(0, len(self.results["gradient_norms"])), self.results["gradient_norms"],
+                       self.results["max_gradients"], self.results["grad_param_ratios"], 20)
+        if "scheduler_history" in self.results.keys():
+            plots.plot_scheduled_lr(axs[1][0], self.results["scheduler_history"])
+        plots.plot_embedding_drift(axs[1][1], self.results["embedding_drifts"])
+
+    def plot_embedding_drifts(self, doubled_lines = True):
+        embedding_drifts = self.embedding_drifts.copy()
+        fig, axs = plt.subplots(1, 1, figsize=(10, 4))
+
+        # Plot 2x Drifts
+        if doubled_lines:
+            axs.plot(range(1, len(embedding_drifts[1]) + 1), np.array(embedding_drifts[1]) * 2, color="green",
+                     label="2x Drift 1", alpha=0.3)
+            axs.plot(range(1, len(embedding_drifts[2]) + 1), np.array(embedding_drifts[2]) * 2, color="blue",
+                     label="2x Drift 2", alpha=0.3)
+            axs.plot(range(1, len(embedding_drifts[4]) + 1), np.array(embedding_drifts[4]) * 2, color="orange",
+                     label="2x Drift 2", alpha=0.3)
+            axs.plot(range(1, len(embedding_drifts[8]) + 1), np.array(embedding_drifts[8]) * 2, color="red",
+                     label="2x Drift 2", alpha=0.3)
+
+        plots.plot_embedding_drift(axs, embedding_drifts, max_multiply=1.5)
+
+        plt.legend()
+        plt.show()
+
+class Animation:
+    def __init__(self, projections: list, title: str, run: Run):
+        self.projections = projections
+        self.title = title
+        # From Run
+        self.run = run
+        self.run_id = run.run_id
+        self.labels = run.labels
+        self.embedding_drifts = run.embedding_drifts.copy()
+
+    def copy(self):
+        return Animation(self.projections.copy(), self.title, self.run)
+
+    def plot(self, figsize=(5, 5), dot_size=5, alpha=0.5, interpolate=False, steps_per_transition=10, symmetric=False):
+        plots.show_with_slider(
+            self.projections,
+            self.labels,
+            figsize=figsize,
+            dot_size=dot_size,
+            alpha=alpha,
+            interpolate=interpolate,
+            steps_per_transition=steps_per_transition,
+            dataset=self.run.dataset,
+            show_legend=False if self.run.dataset == "cifar100" else True,
+            symmetric=symmetric
+        )
+
+    def save_as_gif(
+            self,
+            frame_interval=50,
+            figsize=(4, 4),
+            dot_size=5,
+            alpha=0.6,
+            cmap='tab10',
+            axis_lim=None
+    ):
+        print("Generating plot...")
+        ani = animate_projections(
+            self.projections,
+            self.labels,
+            frame_interval=frame_interval,
+            interpolate=True,
+            steps_per_transition=1,
+            figsize=figsize,
+            dot_size=dot_size,
+            alpha=alpha,
+            cmap=cmap,
+            axis_lim=axis_lim
+        )
+
+        print("Saving file...")
+        filename = f"plots/animations/{self.run_id}_{self.title}.gif"
+
+        ani.save(filename, writer='pillow', dpi=150)
+        plt.close(ani._fig)
+
+        print(filename)
+
+    def evaluate(self, verbose=True, figsize=(10, 3)):
+        return visualization_drift_vs_embedding_drift(
+            self.projections,
+            self.embedding_drifts,
+            verbose=verbose,
+            figsize=figsize,
+        )
+
+    def denoise(self, blend=0.9, window_size=15, mode='window', do_projections=True, do_embedding_drift=True):
+        copy = self.copy()
+
+        if do_projections:
+            copy.projections = denoise_projections(
+                self.projections.copy(),
+                window_size=window_size,
+                blend=blend,
+                mode=mode)
+            copy.title += f" denoised"
+
+        if do_embedding_drift:
+            copy.embedding_drifts = calculate_embedding_drift(
+                denoise_projections(
+                    self.run.embeddings,
+                    window_size=window_size,
+                    blend=blend,
+                    mode=mode
+                )
+            )
+
+        return copy
+
+
+
+
+
 
 
 def visualization_drift_vs_embedding_drift(projections, embedding_drifts, verbose=True, embeddings=False,
@@ -69,15 +213,17 @@ def visualization_drift_vs_embedding_drift(projections, embedding_drifts, verbos
         plots.plot_embedding_drift(on_ax, visualization_drifts, title="Visualization Drift")
         return correlations
 
-    if verbose:
-        print(f"Mean Correlation: {mean_correlation:.4f}")
+    if verbose is False:
+        return mean_correlation
 
-        fig, axs = plt.subplots(1, 2, figsize=figsize)
-        plots.plot_embedding_drift(axs[0], visualization_drifts, title="Visualization Drift")
-        plots.plot_embedding_drift(axs[1], embedding_drifts)
+    print(f"Mean Correlation: {mean_correlation:.4f}")
 
-        plt.legend()
-        plt.show()
+    fig, axs = plt.subplots(1, 2, figsize=figsize)
+    plots.plot_embedding_drift(axs[0], visualization_drifts, title="Visualization Drift")
+    plots.plot_embedding_drift(axs[1], embedding_drifts)
+
+    plt.legend()
+    plt.show()
 
     return mean_correlation
 
@@ -157,9 +303,9 @@ def show_projections_and_drift(projections_list, titles, labels, embedding_drift
 
 
 def generate_projections(
-        embeddings_list,
-        method='tsne',
-        pca_fit_basis='first',
+        run: Run,
+        method='pca',
+        pca_fit_basis='all',
         max_frames=None,
         reverse_computation=False,
         random_state=42,
@@ -181,7 +327,9 @@ def generate_projections(
     assert pca_fit_basis in ['first', 'last', 'all', 'last_visualized', 'window', int]
 
     projections = []
+    embeddings_list = run.embeddings.copy()
     max_frames = max_frames or len(embeddings_list)
+    title="dummy"
 
     # Determine basis data
     if isinstance(pca_fit_basis, int):
@@ -200,12 +348,13 @@ def generate_projections(
         raise ValueError(f"Invalid pca_fit_basis: {pca_fit_basis}")
 
     if method == 'pca' and pca_fit_basis == 'window':
+        title = f'PCA on window (size {window_size})'
         from scipy.linalg import orthogonal_procrustes
 
         prev_components = None
         prev_projection = None
 
-        for i in range(max_frames):
+        for i in tqdm(range(max_frames), desc="PCA frames"):
             window_start = max(0, i - window_size + 1)
             window_data = np.concatenate(embeddings_list[window_start:i + 1], axis=0)
             reducer = PCA(n_components=out_dim)
@@ -230,12 +379,20 @@ def generate_projections(
             prev_projection = projection.copy()
 
     elif method == 'pca':
+        title = f'PCA on {pca_fit_basis}'
         reducer = PCA(n_components=out_dim)
         reducer.fit(basis_data)
         for i in tqdm(range(max_frames), desc="PCA frames"):
             projections.append(reducer.transform(embeddings_list[i]))
 
     elif method == 'tsne':
+        title = (f't-SNE (init={tsne_init}, '
+                f'perplexity={tsne_perplexity}, '
+                f'{metric}, '
+                f'{"reverse computation, " if reverse_computation else ""}'
+                f'{"" if tsne_update == 1 else f"blending={tsne_update},"}'
+                 f')')
+
         tsne = TSNE(n_components=out_dim, init=tsne_init, perplexity=tsne_perplexity, random_state=random_state,
                     metric=metric)
         tsne.fit(basis_data)
@@ -258,6 +415,9 @@ def generate_projections(
                 projections.append(new)
 
     elif method == 'umap':
+        title = (f'UMAP (n={umap_n_neighbors}, dist={umap_min_dist}, {metric}, '
+                f'{"reverse computation, " if reverse_computation else ""}'
+                 f')')
         reducer = umap.UMAP(n_components=out_dim, n_neighbors=umap_n_neighbors, min_dist=umap_min_dist, metric=metric)
         if reverse_computation:
             for i in tqdm(range(max_frames - 1, -1, -1), desc="UMAP frames"):
@@ -270,7 +430,7 @@ def generate_projections(
                 projection = reducer.transform(embeddings_list[i])
                 projections.append(projection)
 
-    return projections
+    return Animation(projections=projections, title=title, run=run)
 
 
 def denoise_projections(projections, blend=0.5, window_size=5, mode='window'):
@@ -308,6 +468,52 @@ def denoise_projections(projections, blend=0.5, window_size=5, mode='window'):
     return denoised_projections
 
 
+def show_animations(
+        animations: list[Animation],
+        custom_titles=None,
+        figsize_per_plot=(5, 5),
+        dot_size=5,
+        alpha=0.6,
+        interpolate=False,
+        steps_per_transition=5,
+        shared_axes=True,
+        with_drift=False
+):
+    projections_list = [ani.projections for ani in animations]
+    titles = custom_titles if custom_titles else [ani.title for ani in animations]
+
+    if not with_drift:
+        plots.show_multiple_projections_with_slider(
+            projections_list=projections_list,
+            labels=animations[0].labels,
+            titles=titles,
+            figsize_per_plot=figsize_per_plot,
+            dot_size=dot_size,
+            alpha=alpha,
+            interpolate=interpolate,
+            steps_per_transition=steps_per_transition,
+            shared_axes=shared_axes,
+            dataset=animations[0].run.dataset,
+        )
+        return
+
+    embedding_drifts = [ani.embedding_drifts for ani in animations]
+    show_projections_and_drift(
+        projections_list = projections_list,
+        titles = titles,
+        labels=animations[0].labels,
+        embedding_drifts= embedding_drifts,
+        embeddings = False,
+        interpolate=interpolate,
+        steps_per_transition=steps_per_transition,
+        figsize_embedding_drift=(6, 4),
+        figsize_visualization=(4, 4),
+        shared_axes=shared_axes,
+        dot_size = dot_size,
+        alpha = alpha,
+    )
+
+
 def animate_projections(
         projections,
         labels,
@@ -316,7 +522,7 @@ def animate_projections(
         frame_interval=50,
         figsize=(4, 4),
         dot_size=5,
-        alpha=0.7,
+        alpha=0.6,
         cmap='tab10',
         title_base='Embedding Evolution',
         axis_lim=None

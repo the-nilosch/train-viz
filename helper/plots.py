@@ -7,6 +7,8 @@ import matplotlib.lines as mlines
 import ipywidgets as widgets
 from IPython.display import display
 
+import helper.visualization
+
 marker_styles = ['o', 'p', '^', 'X', 'D', 'P', 'v', '<', '>', '*', "s"]
 
 
