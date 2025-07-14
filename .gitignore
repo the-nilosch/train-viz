@@ -181,3 +181,6 @@ data/
 .idea/
 trainings/
 NeuroVisualizer/
+sam/
+ae_models/
+plots/
