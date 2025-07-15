@@ -1,37 +1,33 @@
-# train-viz
+# train-viz Setup
 Visualizing the training
 
-### Venv (Old setup)
 
-Create:
+### Needs some directories
 ```
-python -m venv .venv
-```
-
-Activate:
-```
-source .venv/bin/activate
-```
-Windows:
-```
-source venv/Scripts/activate
-```
-
-Saved packages:
-```
-pip freeze | grep -v '^\-e' | sed '/ @ /d' > requirements.txt
-conda env export --no-builds > reuqirements.yml
+mkdir trainings
+mkdir plots
+mkdir plots/animations
+mkdir ae_models
 ```
 
 ### First Environment (train-viz)
+or run setup_envs.sh
 
 ```
 conda create -n train-viz python=3.10
 conda activate train-viz
 
 conda install numpy scipy scikit-learn matplotlib pandas
-conda install pytorch torchvision pytorch-cuda=12.4 -c pytorch -c nvidia
+```
 
+Install right CUDA Version like one of the commands below
+```
+conda install pytorch torchvision pytorch-cuda=12.4 -c pytorch -c nvidia
+conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia
+```
+
+Continue:
+```
 pip install -r requirements.txt
 
 python -m ipykernel install --user --name train-viz --display-name "Python (train-viz)"
@@ -77,3 +73,15 @@ pip install -r requirements.txt
 ```
 **For Windows:** On Windows folders named `aux` are not allowed - download as ZIP file and rename the folder `aux` to `neuro_aux`
 
+For Linux we need this as well:
+```
+mv NeuroVisualizer/aux/ NeuroVisualizer/neuro_aux
+find NeuroVisualizer -name "*.py" -exec sed -i 's/from aux\./from NeuroVisualizer.neuro_aux./g' {} +
+```
+
+### Neuro-Visualizer
+```
+git clone https://github.com/moskomule/sam.pytorch sam
+cd NeuroVisualizer
+pip install -r requirements.txt
+```

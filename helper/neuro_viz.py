@@ -24,13 +24,13 @@ class FlatTensorDataset(torch.utils.data.Dataset):
         return len(self.file_paths)
 
     def __getitem__(self, idx):
-        x = torch.load(self.file_paths[idx], map_location='cpu')
+        x = torch.load(self.file_paths[idx], map_location='cpu', weights_only=True)
         if self.transform:
             x = self.transform(x)
         return x
 
 def calculate_mean_std_flat(file_paths):
-    tensors = [torch.load(fp, map_location='cpu') for fp in file_paths]
+    tensors = [torch.load(fp, map_location='cpu', weights_only=True) for fp in file_paths]
     stacked = torch.stack(tensors)
     mean = stacked.mean(dim=0)
     std = stacked.std(dim=0)
@@ -172,8 +172,8 @@ class Loss:
             raise ValueError(f"Unsupported dataset: {dataset_name}")
 
         kwargs = {'num_workers': 2, 'pin_memory': True}
-        self.train_loader = DataLoader(train_dataset, batch_size=10000, shuffle=True, **kwargs)
-        self.test_loader = DataLoader(test_dataset, batch_size=10000, shuffle=False, **kwargs)
+        self.train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True, **kwargs)
+        self.test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, **kwargs)
 
     def get_loss(self, dnn, loss_name, whichloss):
         if whichloss == "mse" or whichloss == "crossentropy":
@@ -204,7 +204,7 @@ def compute_trajectory(
     - trajectory_models (decoded weights)
     - trajectory_losses (loss values)
     """
-    # ---- 2️⃣ Decode trajectory ----
+    # ---- Decode trajectory ----
     trajectory_models = []
     trajectory_coordinates = []
 
@@ -222,13 +222,13 @@ def compute_trajectory(
 
     print(f"✅ Decoded trajectory shapes: coords {trajectory_coordinates.shape}, models {trajectory_models.shape}")
 
-    # ---- 3️⃣ Compute losses ----
-    from vision_classification import init_mlp_for_dataset
+    # ---- Compute losses ----
 
     trajectory_losses = []
     for i in tqdm(range(trajectory_models.shape[0]), desc="Computing trajectory losses"):
         model_flattened = trajectory_models[i, :]
-        repopulate_model(model_flattened, model)
+        assert model_flattened.numel() == sum(p.numel() for p in model.parameters()); "Mismatch in parameter size"
+        repopulate_model_fixed(model_flattened, model)
         model.eval()
         loss = loss_obj.get_loss(model, loss_name, whichloss).detach()
         trajectory_losses.append(loss)
@@ -238,3 +238,12 @@ def compute_trajectory(
     print(f"✅ Computed {trajectory_losses.shape[0]} trajectory losses")
 
     return trajectory_coordinates, trajectory_models, trajectory_losses
+
+def repopulate_model_fixed(flattened_params, model):
+    start_idx = 0
+    for param in model.parameters():
+        size = param.numel()
+        sub_flattened = flattened_params[start_idx : start_idx + size].view(param.size())
+        param.data.copy_(sub_flattened)
+        start_idx += size
+    return model
