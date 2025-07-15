@@ -57,6 +57,32 @@ class Run:
         plt.legend()
         plt.show()
 
+    def print_info(self):
+        print(f"Sequene of {len(self.embeddings)} snapshots")
+        print(f"One Snapshot has (n, dim) = {self.embeddings[0].shape}")
+
+    def subsample(self, snapshot_step: int = 2, point_step: int = 2):
+        """
+        Subsample the stored embeddings in place and recompute embedding drifts.
+
+        Parameters
+        ----------
+        snapshot_step : int, optional (default=2)
+        point_step : int, optional (default=2)
+        """
+
+        # subsample the time axis (snapshots)
+        self.embeddings = self.embeddings[::snapshot_step]
+
+        # subsample within each embedding (points)
+        self.embeddings = [emb[::point_step, :] for emb in self.embeddings]
+
+        # recompute embedding drift on the subsampled embeddings
+        self.embedding_drifts = calculate_embedding_drift(self.embeddings)
+
+        return self
+
+
 class Animation:
     def __init__(self, projections: list, title: str, run: Run):
         self.projections = projections
