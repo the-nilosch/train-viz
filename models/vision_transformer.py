@@ -21,6 +21,7 @@ class PatchEmbedding(nn.Module):
         x = x + self.pos_embedding
         return x
 
+
 class TransformerEncoder(nn.Module):
     def __init__(self, emb_dim=128, num_heads=4, depth=6, mlp_dim=256, dropout=0.1):
         super().__init__()
@@ -44,6 +45,19 @@ class ViT(nn.Module):
         self.transformer_encoder = TransformerEncoder(emb_dim, num_heads, depth, mlp_dim, dropout)
         self.head = nn.Linear(emb_dim, num_classes)
 
+        # store config
+        self.cfg = dict(
+            img_size=img_size,
+            patch_size=patch_size,
+            num_classes=num_classes,
+            emb_dim=emb_dim,
+            depth=depth,
+            num_heads=num_heads,
+            mlp_dim=mlp_dim,
+            dropout=dropout,
+            input_channels=input_channels
+        )
+
     def forward(self, x, return_embedding=False):
         x = self.patch_embed(x)
         x = self.transformer_encoder(x)
@@ -52,4 +66,10 @@ class ViT(nn.Module):
         if return_embedding:
             return out, cls_token_embedding
         return out
+
+    def __repr__(self):
+        # build a concise string from the config
+        fields = ", ".join(f"{k}={v}" for k, v in self.cfg.items())
+        return f"{self.__class__.__name__}({fields})"
+
 

@@ -2,9 +2,11 @@ import torch
 import torch.nn as nn
 
 class CNN(nn.Module):
-    def __init__(self, conv_dims=[64, 128], kernel_sizes=[3, 3], hidden_dims=[128], num_classes=10, input_channels=3, dropout=0.2):
+    def __init__(self, conv_dims=[64, 128], kernel_sizes=[3, 3], hidden_dims=[128], num_classes=10, input_channels=3,
+                 dropout=0.2, residual=True):
         super(CNN, self).__init__()
         self.emb_dim = hidden_dims[-1]
+        self.residual = residual
 
         # Validate kernel size length
         if len(kernel_sizes) != len(conv_dims):
@@ -15,7 +17,8 @@ class CNN(nn.Module):
         prev_channels = input_channels
 
         for out_channels, kernel_size in zip(conv_dims, kernel_sizes):
-            conv_layers.append(ResidualBlock(prev_channels, out_channels, kernel_size, stride=1, dropout=dropout))
+            conv_layers.append(ResidualBlock(prev_channels, out_channels, kernel_size, stride=1,
+                                             dropout=dropout, is_residual=residual))
             conv_layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
             prev_channels = out_channels
 
@@ -40,6 +43,16 @@ class CNN(nn.Module):
         self.fc_layers = nn.Sequential(*fc_layers)
         self.head = nn.Linear(prev_dim, num_classes)
 
+        self.cfg = dict(conv_dims=conv_dims,
+                        kernel_sizes=kernel_sizes,
+                        hidden_dims=hidden_dims,
+                        dropout=dropout,
+                        residual=residual)
+
+    def __repr__(self):
+        fields = ", ".join(f"{k}={v}" for k,v in self.cfg.items())
+        return f"{self.__class__.__name__}({fields})"
+
     def forward(self, x, return_embedding=False):
         x = self.conv_layers(x)
         x = x.view(x.size(0), -1)
@@ -52,9 +65,10 @@ class CNN(nn.Module):
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, dropout=0.2):
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, dropout=0.2, is_residual=True):
         super(ResidualBlock, self).__init__()
         padding = kernel_size // 2
+        self.is_residual = is_residual
 
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding)
         self.bn1 = nn.BatchNorm2d(out_channels)
@@ -73,9 +87,10 @@ class ResidualBlock(nn.Module):
         out = self.bn2(self.conv2(out))
 
         # Apply residual connection
-        if self.residual_conv:
-            identity = self.residual_conv(identity)
+        if self.is_residual:
+            if self.residual_conv:
+                identity = self.residual_conv(identity)
+            out += identity
 
-        out += identity
         out = self.relu(out)
         return out
