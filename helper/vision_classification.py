@@ -58,7 +58,6 @@ def mnist_init_dataset():
 
     return train_data, test_data
 
-
 def cifar10_init_dataset():
     # Training transform (with augmentation)
     train_transform = transforms.Compose([

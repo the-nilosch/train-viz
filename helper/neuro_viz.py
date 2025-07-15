@@ -1,8 +1,18 @@
 import torch
+import torch.nn as nn
+from torch.nn import functional as F
+import pandas as pd
+import os
 from torch.utils.data import DataLoader
 from NeuroVisualizer.neuro_aux.trajectories_data import NormalizeModelParameters
 from NeuroVisualizer.neuro_aux.utils import repopulate_model
 from tqdm import tqdm
+
+from helper.vision_classification import (
+    mnist_init_dataset,
+    cifar10_init_dataset,
+    cifar100_init_dataset
+)
 
 ### Dataset and Loader
 class FlatTensorDataset(torch.utils.data.Dataset):
@@ -34,14 +44,6 @@ def get_dataloader_flat(pt_files, batch_size, shuffle=True, num_workers=2):
 
 ### Training
 
-
-import torch
-import torch.nn as nn
-import pandas as pd
-import os
-from tqdm import tqdm
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
-
 def train_autoencoder(
     model,
     train_loader,
@@ -57,6 +59,7 @@ def train_autoencoder(
     Generic improved AE training loop with early stopping and scheduler.
     Saves best model to save_path.
     """
+    from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
@@ -151,19 +154,6 @@ def compute_grid_losses(grid_coords, transform, ae_model, model, loss_obj, loss_
     grid_losses = torch.stack(grid_losses)
     return grid_losses
 
-
-from torch.utils.data import DataLoader
-from torch.nn import functional as F
-import torch
-
-
-
-# Import your dataset init helpers from vision_classification
-from vision_classification import (
-    mnist_init_dataset,
-    cifar10_init_dataset,
-    cifar100_init_dataset
-)
 
 class Loss:
     def __init__(self, dataset_name, device):

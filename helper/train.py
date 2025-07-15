@@ -11,7 +11,8 @@ import logging
 from torch.optim import Adam, AdamW, SGD
 from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR
 
-import plots
+import helper.plots as plots
+import helper.visualization as visualization
 
 marker_styles = ['o', 'p', '^', 'X', 'D', 'P', 'v', '<', '>', '*', "s"]
 
@@ -122,7 +123,7 @@ def train_model_with_embedding_tracking(
                 embedding_snapshot_labels.append(labels)
 
                 if track_embedding_drift:
-                    embedding_drifts = _calculate_embedding_drift(embedding_snapshots)
+                    embedding_drifts = visualization.calculate_embedding_drift(embedding_snapshots)
                 model.train()
                 embedding_indices.append(embedding_counter)
                 embedding_counter += 1
@@ -250,7 +251,7 @@ def _save_model(model, epoch, next_run_id=None):
 
     if next_run_id is None:
         # list all entries in trainings/
-        entries = os.listdir('../trainings')
+        entries = os.listdir('trainings')
 
         # extract numbers from names like run-0001, run-0002, …
         nums = [

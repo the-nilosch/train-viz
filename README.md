@@ -23,18 +23,42 @@ pip freeze | grep -v '^\-e' | sed '/ @ /d' > requirements.txt
 conda env export --no-builds > reuqirements.yml
 ```
 
-### Second Environment for PHATE
+### First Environment (train-viz)
+
+```
+conda create -n train-viz python=3.10
+conda activate train-viz
+
+conda install numpy scipy scikit-learn matplotlib pandas
+pip install -r requirements.txt
+
+python -m ipykernel install --user --name train-viz --display-name "Python (train-viz)"
+```
+
+
+### Second Environment (phate-env)
 
 ```
 conda create -n phate-env python=3.10
 
 conda activate phate-env
 
-conda install numpy=1.24 pandas=1.5
+pip install "numpy<2.0" "pandas>=1.5,<2.0"
 pip install phate m-phate
+pip install tqdm h5py umap torchvision
+```
 
+Register to jupyter kernel
+```
+pip install notebook jupyterlab ipykernel ipywidgets ipympl
+python -m ipykernel install --user --name phate-env --display-name "Python (phate-env)"
+```
+
+Currently optional:
+```
 pip install -r requirements-phate-env.txt
 ```
+
 
 Saved packages:
 ```

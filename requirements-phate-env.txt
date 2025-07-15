@@ -26,7 +26,6 @@ pillow==11.3.0
 PyGSP==0.5.1
 pyparsing==3.2.3
 PyQt6==6.7.1
-pywin32==308
 s-gd2==1.8.1
 scikit-learn==1.7.0
 scipy==1.15.3
