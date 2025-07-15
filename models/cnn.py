@@ -3,7 +3,7 @@ import torch.nn as nn
 
 class CNN(nn.Module):
     def __init__(self, conv_dims=[64, 128], kernel_sizes=[3, 3], hidden_dims=[128], num_classes=10, input_channels=3,
-                 dropout=0.2, residual=True):
+                 dropout=0.2, input_size=32, residual=True):
         super(CNN, self).__init__()
         self.emb_dim = hidden_dims[-1]
         self.residual = residual
@@ -26,7 +26,7 @@ class CNN(nn.Module):
 
         # Calculate input size for fully connected layers
         with torch.no_grad():
-            dummy_input = torch.randn(1, input_channels, 32, 32)
+            dummy_input = torch.randn(1, input_channels, input_size, input_size)
             dummy_output = self.conv_layers(dummy_input)
             fc_input_dim = dummy_output.view(1, -1).shape[1]
 

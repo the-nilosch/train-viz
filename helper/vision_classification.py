@@ -148,69 +148,80 @@ def get_cifar100_fine_to_coarse_labels():
         for fine in fine_list
     }
 
-
-def init_mlp_for_dataset(dataset_name, hidden_dims=[128, 64], dropout=0.2):
+def get_dataset_spec(dataset_name):
+    """
+    Returns a dictionary with:
+    - input_channels
+    - img_size
+    - input_size (flattened for MLP)
+    - num_classes
+    """
     if dataset_name == "mnist":
-        input_size = 28 * 28  # MNIST image size
+        input_channels = 1
+        img_size = 28
         num_classes = 10
     elif dataset_name == "cifar10":
-        input_size = 32 * 32 * 3  # CIFAR image size (RGB channels)
+        input_channels = 3
+        img_size = 32
         num_classes = 10
     elif dataset_name == "cifar100":
-        input_size = 64 * 64 * 3  # CIFAR-100 image size (RGB channels)
+        input_channels = 3
+        img_size = 32
         num_classes = 100
     else:
         raise ValueError(f"Unsupported dataset: {dataset_name}")
 
-    return MLP(hidden_dims=hidden_dims, input_size=input_size, num_classes=num_classes, dropout=dropout)
+    input_size = img_size * img_size * input_channels
+
+    return dict(
+        input_channels=input_channels,
+        img_size=img_size,
+        input_size=input_size,
+        num_classes=num_classes
+    )
+
+
+def init_mlp_for_dataset(dataset_name, hidden_dims=[128, 64], dropout=0.2):
+    spec = get_dataset_spec(dataset_name)
+
+    return MLP(
+        hidden_dims=hidden_dims,
+        input_size=spec["input_size"],
+        num_classes=spec["num_classes"],
+        dropout=dropout
+    )
 
 
 def init_cnn_for_dataset(dataset_name, conv_dims=[64, 128], kernel_sizes=[3, 3], hidden_dims=[128], dropout=0.2,
                          residual=True):
-    if dataset_name == "mnist":
-        input_channels = 1
-        num_classes = 10
-    elif dataset_name == "cifar10":
-        input_channels = 3
-        num_classes = 10
-    elif dataset_name == "cifar100":
-        input_channels = 3
-        num_classes = 100
-    else:
-        raise ValueError(f"Unsupported dataset: {dataset_name}")
+    spec = get_dataset_spec(dataset_name)
 
-    return CNN(conv_dims=conv_dims, kernel_sizes=kernel_sizes, hidden_dims=hidden_dims, num_classes=num_classes,
-               input_channels=input_channels, dropout=dropout, residual=residual)
+    return CNN(
+        conv_dims=conv_dims,
+        kernel_sizes=kernel_sizes,
+        hidden_dims=hidden_dims,
+        num_classes=spec["num_classes"],
+        input_channels=spec["input_channels"],
+        input_size=spec["img_size"],
+        dropout=dropout,
+        residual=residual
+    )
 
 
 def init_vit_for_dataset(dataset_name, emb_dim=128, depth=6, num_heads=4, mlp_dim=256, dropout=0.1, patch_size=4):
-    if dataset_name == "mnist":
-        img_size = 28
-        num_classes = 10
-        input_channels = 1  # MNIST grayscale (would require adjustment)
-    elif dataset_name == "cifar10":
-        img_size = 32
-        num_classes = 10
-        input_channels = 3
-    elif dataset_name == "cifar100":
-        img_size = 32
-        num_classes = 100
-        input_channels = 3
-    else:
-        raise ValueError(f"Unsupported dataset: {dataset_name}")
+    spec = get_dataset_spec(dataset_name)
 
-    model = ViT(
-        img_size=img_size,
+    return ViT(
+        img_size=spec["img_size"],
         patch_size=patch_size,
-        num_classes=num_classes,
+        num_classes=spec["num_classes"],
         emb_dim=emb_dim,
         depth=depth,
         num_heads=num_heads,
         mlp_dim=mlp_dim,
         dropout=dropout,
-        input_channels=input_channels
+        input_channels=spec["input_channels"]
     )
-    return model
 
 
 def init_resnet_for_dataset(
@@ -220,27 +231,15 @@ def init_resnet_for_dataset(
         dropout=0.2,
         zero_init_residual=False
 ):
-    if dataset_name == "mnist":
-        input_channels = 1
-        num_classes = 10
-    elif dataset_name == "cifar10":
-        input_channels = 3
-        num_classes = 10
-    elif dataset_name == "cifar100":
-        input_channels = 3
-        num_classes = 100
-    else:
-        raise ValueError(f"Unsupported dataset: {dataset_name}")
-
-    model = ResNet(
+    spec = get_dataset_spec(dataset_name)
+    return ResNet(
         layers=layers,
-        num_classes=num_classes,
-        input_channels=input_channels,
+        num_classes=spec["num_classes"],
+        input_channels=spec["input_channels"],
         fc_hidden_dims=fc_hidden_dims,
         dropout=dropout,
         zero_init_residual=zero_init_residual
     )
-    return model
 
 
 def init_densenet_for_dataset(
@@ -250,24 +249,12 @@ def init_densenet_for_dataset(
         fc_hidden_dims=[128],
         dropout=0.1
 ):
-    if dataset_name == "mnist":
-        input_channels = 1
-        num_classes = 10
-    elif dataset_name == "cifar10":
-        input_channels = 3
-        num_classes = 10
-    elif dataset_name == "cifar100":
-        input_channels = 3
-        num_classes = 100
-    else:
-        raise ValueError(f"Unsupported dataset: {dataset_name}")
-
-    model = DenseNet(
+    spec = get_dataset_spec(dataset_name)
+    return DenseNet(
         block_config=block_config,
         growth_rate=growth_rate,
-        num_classes=num_classes,
-        input_channels=input_channels,
+        num_classes=spec["num_classes"],
+        input_channels=spec["input_channels"],
         fc_hidden_dims=fc_hidden_dims,
         dropout=dropout
     )
-    return model
