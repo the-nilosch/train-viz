@@ -1,8 +1,18 @@
 import torch
+import torch.nn as nn
+from torch.nn import functional as F
+import pandas as pd
+import os
 from torch.utils.data import DataLoader
 from NeuroVisualizer.neuro_aux.trajectories_data import NormalizeModelParameters
 from NeuroVisualizer.neuro_aux.utils import repopulate_model
 from tqdm import tqdm
+
+from helper.vision_classification import (
+    mnist_init_dataset,
+    cifar10_init_dataset,
+    cifar100_init_dataset
+)
 
 ### Dataset and Loader
 class FlatTensorDataset(torch.utils.data.Dataset):
@@ -14,13 +24,13 @@ class FlatTensorDataset(torch.utils.data.Dataset):
         return len(self.file_paths)
 
     def __getitem__(self, idx):
-        x = torch.load(self.file_paths[idx], map_location='cpu')
+        x = torch.load(self.file_paths[idx], map_location='cpu', weights_only=True)
         if self.transform:
             x = self.transform(x)
         return x
 
 def calculate_mean_std_flat(file_paths):
-    tensors = [torch.load(fp, map_location='cpu') for fp in file_paths]
+    tensors = [torch.load(fp, map_location='cpu', weights_only=True) for fp in file_paths]
     stacked = torch.stack(tensors)
     mean = stacked.mean(dim=0)
     std = stacked.std(dim=0)
@@ -33,14 +43,6 @@ def get_dataloader_flat(pt_files, batch_size, shuffle=True, num_workers=2):
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers), normalizer
 
 ### Training
-
-
-import torch
-import torch.nn as nn
-import pandas as pd
-import os
-from tqdm import tqdm
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
 def train_autoencoder(
     model,
@@ -57,6 +59,7 @@ def train_autoencoder(
     Generic improved AE training loop with early stopping and scheduler.
     Saves best model to save_path.
     """
+    from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
@@ -152,19 +155,6 @@ def compute_grid_losses(grid_coords, transform, ae_model, model, loss_obj, loss_
     return grid_losses
 
 
-from torch.utils.data import DataLoader
-from torch.nn import functional as F
-import torch
-
-
-
-# Import your dataset init helpers from vision_classification
-from vision_classification import (
-    mnist_init_dataset,
-    cifar10_init_dataset,
-    cifar100_init_dataset
-)
-
 class Loss:
     def __init__(self, dataset_name, device):
         self.device = device
@@ -182,8 +172,8 @@ class Loss:
             raise ValueError(f"Unsupported dataset: {dataset_name}")
 
         kwargs = {'num_workers': 2, 'pin_memory': True}
-        self.train_loader = DataLoader(train_dataset, batch_size=10000, shuffle=True, **kwargs)
-        self.test_loader = DataLoader(test_dataset, batch_size=10000, shuffle=False, **kwargs)
+        self.train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True, **kwargs)
+        self.test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, **kwargs)
 
     def get_loss(self, dnn, loss_name, whichloss):
         if whichloss == "mse" or whichloss == "crossentropy":
@@ -214,7 +204,7 @@ def compute_trajectory(
     - trajectory_models (decoded weights)
     - trajectory_losses (loss values)
     """
-    # ---- 2️⃣ Decode trajectory ----
+    # ---- Decode trajectory ----
     trajectory_models = []
     trajectory_coordinates = []
 
@@ -232,13 +222,13 @@ def compute_trajectory(
 
     print(f"✅ Decoded trajectory shapes: coords {trajectory_coordinates.shape}, models {trajectory_models.shape}")
 
-    # ---- 3️⃣ Compute losses ----
-    from vision_classification import init_mlp_for_dataset
+    # ---- Compute losses ----
 
     trajectory_losses = []
     for i in tqdm(range(trajectory_models.shape[0]), desc="Computing trajectory losses"):
         model_flattened = trajectory_models[i, :]
-        repopulate_model(model_flattened, model)
+        assert model_flattened.numel() == sum(p.numel() for p in model.parameters()); "Mismatch in parameter size"
+        repopulate_model_fixed(model_flattened, model)
         model.eval()
         loss = loss_obj.get_loss(model, loss_name, whichloss).detach()
         trajectory_losses.append(loss)
@@ -248,3 +238,12 @@ def compute_trajectory(
     print(f"✅ Computed {trajectory_losses.shape[0]} trajectory losses")
 
     return trajectory_coordinates, trajectory_models, trajectory_losses
+
+def repopulate_model_fixed(flattened_params, model):
+    start_idx = 0
+    for param in model.parameters():
+        size = param.numel()
+        sub_flattened = flattened_params[start_idx : start_idx + size].view(param.size())
+        param.data.copy_(sub_flattened)
+        start_idx += size
+    return model

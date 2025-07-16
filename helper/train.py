@@ -14,6 +14,11 @@ from sklearn.metrics import confusion_matrix
 
 import helper.plots as plots
 import helper.visualization as visualization
+<<<<<<< HEAD
+=======
+
+marker_styles = ['o', 'p', '^', 'X', 'D', 'P', 'v', '<', '>', '*', "s"]
+>>>>>>> refs/remotes/origin/main
 
 
 def train_model_with_embedding_tracking(
@@ -320,7 +325,7 @@ def _setup_training(model, learning_rate, epochs, weight_decay, use_sam=False, o
 
         # Import the PyTorch‐SAMSGD wrapper
         try:
-            from sam import SAMSGD
+            from sam.sam import SAMSGD
         except (ImportError, ModuleNotFoundError) as e:
             raise ImportError(
                 f"Could not import SAMSGD from {sam_path!r}: {e}\n"
