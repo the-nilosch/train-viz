@@ -14,11 +14,6 @@ from sklearn.metrics import confusion_matrix
 
 import helper.plots as plots
 import helper.visualization as visualization
-<<<<<<< HEAD
-=======
-
-marker_styles = ['o', 'p', '^', 'X', 'D', 'P', 'v', '<', '>', '*', "s"]
->>>>>>> refs/remotes/origin/main
 
 
 def train_model_with_embedding_tracking(
@@ -149,21 +144,32 @@ def train_model_with_embedding_tracking(
         model.eval()
         all_preds = []
         all_targets = []
-        epoch_val_loss = 0
+        total_loss = 0.0
+        total_samples = 0
+
         with torch.no_grad():
             for data, target in test_loader:
                 data, target = data.to(device), target.to(device)
                 output, _ = model(data, return_embedding=True)
-                epoch_val_loss += criterion(output, target).item()
+
+                # scale loss by batch size
+                batch_size = data.size(0)
+                loss = criterion(output, target).item() * batch_size
+                total_loss += loss
+                total_samples += batch_size
+
+                # predictions
                 _, preds = torch.max(output, 1)
                 all_preds.extend(preds.cpu().tolist())
                 all_targets.extend(target.cpu().tolist())
 
-        val_loss = epoch_val_loss / len(test_loader)
+        # now divide by total number of samples
+        val_loss = total_loss / total_samples
+
         # standard accuracy
         val_acc = sum(p == t for p, t in zip(all_preds, all_targets)) / len(all_targets)
 
-        # **new**: compute and store confusion matrix
+        # confusion matrix
         cm = confusion_matrix(all_targets, all_preds, labels=list(range(num_classes)))
         val_confusion_matrices.append(cm)
 
