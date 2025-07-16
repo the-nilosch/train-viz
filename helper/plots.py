@@ -8,8 +8,6 @@ import ipywidgets as widgets
 from IPython.display import display
 from sklearn.metrics import ConfusionMatrixDisplay
 
-import helper.visualization
-
 marker_styles = ['o', 'p', '^', 'X', 'D', 'P', 'v', '<', '>', '*', "s"]
 
 
@@ -149,6 +147,79 @@ def plot_embedding_drift(ax, embedding_drifts, title="Embedding Drift", max_mult
     ax.set_xlabel("Snapshot Index")
     ax.legend(loc='upper right')
 
+
+def show_confusion_slider(
+        confusion_matrices,
+        dataset=None,
+        figsize=(5, 5),
+        cmap='Blues',
+        annotate=False,
+        interval=500
+):
+    """
+    Visualize a sequence of confusion matrices with a Play+Slider widget,
+    updating only the image data and text annotations on the same canvas.
+    """
+    from helper.vision_classification import get_text_labels
+
+    cms = np.array(confusion_matrices)
+    T, C, _ = cms.shape
+    if dataset is None:
+        class_names = list(range(C))
+    else:
+        class_names = get_text_labels(dataset)
+
+    # Precompute global vmax for consistent coloring:
+    vmax = cms.max()
+
+    # Create figure & initial heatmap
+    fig, ax = plt.subplots(figsize=figsize)
+    im = ax.imshow(cms[0], cmap=cmap, vmin=0, vmax=vmax)
+    ax.set_xticks([]); ax.set_xticklabels([]) # no ticks, no labels
+    ax.set_yticks(range(C)); ax.set_yticklabels(class_names)
+    title = ax.set_title("Confusion Matrix – Frame 0")
+    # cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    # Create text annotations once
+    texts = []
+    if annotate:
+        for i in range(C):
+            row = []
+            for j in range(C):
+                txt = ax.text(j, i, int(cms[0, i, j]),
+                              ha='center', va='center',
+                              color='white' if cms[0, i, j] > vmax / 2 else 'black')
+                row.append(txt)
+            texts.append(row)
+
+    fig.tight_layout()
+    plt.show()
+
+    # Widgets
+    play = widgets.Play(min=0, max=T - 1, step=1, interval=interval)
+    slider = widgets.IntSlider(min=0, max=T - 1, step=1, description='Frame')
+    widgets.jslink((play, 'value'), (slider, 'value'))
+
+    def _update(change):
+        frame = change['new']
+        # update heatmap data
+        im.set_data(cms[frame])
+        # update title
+        title.set_text(f"Confusion Matrix – Frame {frame}")
+        # update annotations
+        if annotate:
+            for i in range(C):
+                for j in range(C):
+                    val = int(cms[frame, i, j])
+                    txt = texts[i][j]
+                    txt.set_text(val)
+                    txt.set_color('white' if val > vmax / 2 else 'black')
+        fig.canvas.draw_idle()
+
+    slider.observe(_update, names='value')
+    display(widgets.HBox([play, slider]))
+
+
 def show_with_slider(
         projections,
         labels,
@@ -253,7 +324,10 @@ def show_multiple_projections_with_slider(
         shared_axes=True,
         dataset=None,
         axes=None,
-        fig=None
+        fig=None,
+        confusion_matrices=None,
+        cmap_conf='Blues',
+        annotate_conf=False,
 ):
     from helper.vision_classification import get_text_labels
     class_names = range(0, 100) if dataset is None else get_text_labels(dataset)
@@ -277,21 +351,28 @@ def show_multiple_projections_with_slider(
     unique_labels = np.unique(np.concatenate(labels))
     label_frame = labels[0]
 
-    # Layout
-    if num_views <= 4:
-        nrows, ncols = 1, num_views
+    # prepare confusion
+    if confusion_matrices is not None:
+        cms = np.array(confusion_matrices)
+        # resample CMS to match projection frames
+        if len(cms) != n_frames:
+            idxs = np.linspace(0, len(cms) - 1, n_frames).round().astype(int)
+            cms = cms[idxs]
+        C = cms.shape[1]
+        vmax = cms.max()
+        total_panels = len(projections_list) + 1
     else:
-        ncols = math.ceil(math.sqrt(num_views))
-        nrows = math.ceil(num_views / ncols)
+        total_panels = len(projections_list)
 
+    # layout grid
+    ncols = min(total_panels, 3)
+    nrows = math.ceil(total_panels / ncols)
+
+    # create fig/axes if needed
     if axes is None:
         fig, axes = plt.subplots(nrows, ncols,
                                  figsize=(figsize_per_plot[0] * ncols, figsize_per_plot[1] * nrows))
-        axes = np.array(axes).reshape(-1)
-
-        for ax in axes[num_views:]:
-            fig.delaxes(ax)
-        axes = axes[:num_views]
+        axes = np.array(axes).reshape(-1)[:total_panels]
 
     assert fig is not None, "When passing axes, it also needs a figure"
 
@@ -300,12 +381,10 @@ def show_multiple_projections_with_slider(
 
     # Create scatter handles
     scatters = []
-    for i, ax in enumerate(axes):
-        ax.set_xlim(axis_limits[i])
-        ax.set_ylim(axis_limits[i])
+    for i, ax in enumerate(axes[:len(projections_list)]):
+        ax.set_xlim(axis_limits[i]); ax.set_xticks([])
+        ax.set_ylim(axis_limits[i]); ax.set_yticks([])
         ax.set_aspect('equal')
-        ax.set_xticks([])
-        ax.set_yticks([])
 
         title = titles[i] if titles and i < len(titles) else f"View {i + 1}"
         ax.set_title(title)
@@ -323,9 +402,49 @@ def show_multiple_projections_with_slider(
                 scatter_dict[fine_idx] = scatter
             scatters.append(scatter_dict)
         else:
-            sc = ax.scatter(projections_list[i][0][:, 0], projections_list[i][0][:, 1],
-                            c=label_frame, cmap='tab10', s=dot_size, alpha=alpha)
+            sc = ax.scatter(projections_list[i][0][:, 0],
+                            projections_list[i][0][:, 1],
+                            c=label_frame, cmap='tab10',
+                            s=dot_size, alpha=alpha)
             scatters.append(sc)
+
+    # set up confusion‐matrix panel
+    if confusion_matrices is not None:
+        # pick same colormap as your scatter
+        cm_scatter = plt.get_cmap('tab10' if C <= 10 else 'tab20')
+        norm = plt.Normalize(vmin=0, vmax=C - 1)
+        diag_colors = cm_scatter(norm(np.arange(C)))
+
+        ax_cm = axes[-1]
+        im = ax_cm.imshow(cms[0], vmin=0, vmax=vmax, cmap=cmap_conf)
+        txts = []
+        if annotate_conf:
+            for ii in range(C):
+                row=[]
+                for jj in range(C):
+                    val=int(cms[0,ii,jj])
+                    color='white' if val>vmax/2 else 'black'
+                    t = ax_cm.text(jj, ii, val, ha='center', va='center', color=color)
+                    row.append(t)
+                txts.append(row)
+        ax_cm.set_xticks([]); ax_cm.set_yticks([])
+        ax_cm.set_title("Confusion Matrix")
+
+        ticks = np.arange(C)
+        ax_cm.set_xticks(ticks)
+        ax_cm.set_yticks(ticks)
+
+        # use a bullet for every tick
+        ax_cm.set_xticklabels(['●'] * C)
+        ax_cm.set_yticklabels(['●'] * C)
+
+        # color each bullet
+        for i, lbl in enumerate(ax_cm.get_xticklabels()):
+            lbl.set_color(diag_colors[i])
+            lbl.set_fontsize(12)
+        for i, lbl in enumerate(ax_cm.get_yticklabels()):
+            lbl.set_color(diag_colors[i])
+            lbl.set_fontsize(12)
 
     # Update logic
     def update(frame_idx):
@@ -337,15 +456,24 @@ def show_multiple_projections_with_slider(
             else:
                 scatters[i].set_offsets(projections_list[i][frame_idx])
                 scatters[i].set_array(np.array(label_frame))
+        if confusion_matrices is not None:
+            im.set_data(cms[frame_idx])
+            if annotate_conf:
+                for ii in range(C):
+                    for jj in range(C):
+                        val=int(cms[frame_idx,ii,jj])
+                        t=txts[ii][jj]
+                        t.set_text(val)
+                        t.set_color('white' if val>vmax/2 else 'black')
         fig.canvas.draw_idle()
 
     # Slider
-    slider = widgets.Play(min=0, max=n_frames - 1, step=1)
-    slider_control = widgets.IntSlider(min=0, max=n_frames - 1, step=1)
-    widgets.jslink((slider, 'value'), (slider_control, 'value'))
+    play = widgets.Play(min=0, max=n_frames - 1, step=1)
+    slider = widgets.IntSlider(min=0, max=n_frames - 1, step=1)
+    widgets.jslink((play, 'value'), (slider, 'value'))
 
-    out = widgets.interactive_output(update, {'frame_idx': slider_control})
-    display(widgets.VBox([widgets.HBox([slider, slider_control]), out]))
+    out = widgets.interactive_output(update, {'frame_idx': slider})
+    display(widgets.VBox([widgets.HBox([play, slider]), out]))
 
 
 def _set_equal_aspect_limits(projections, ax, symmetric=True):

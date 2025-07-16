@@ -82,6 +82,26 @@ class Run:
 
         return self
 
+    def confusion_matrix(
+            self,
+            figsize=(5, 5),
+            cmap='Blues',
+            annotate=False,
+            interval=500
+    ):
+        """
+        Visualize a sequence of confusion matrices with a Play+Slider widget,
+        updating only the image data and text annotations on the same canvas.
+        """
+        plots.show_confusion_slider(
+            self.results['val_confusion_matrices'],
+            self.dataset,
+            figsize=figsize,
+            cmap='Blues',
+            annotate=annotate,
+            interval=interval
+        )
+
 
 class Animation:
     def __init__(self, projections: list, title: str, run: Run):
@@ -503,7 +523,9 @@ def show_animations(
         interpolate=False,
         steps_per_transition=5,
         shared_axes=True,
-        with_drift=False
+        with_drift=False,
+        add_confusion_matrix=False,
+        annotate_confusion_matrix=False
 ):
     projections_list = [ani.projections for ani in animations]
     titles = custom_titles if custom_titles else [ani.title for ani in animations]
@@ -520,6 +542,8 @@ def show_animations(
             steps_per_transition=steps_per_transition,
             shared_axes=shared_axes,
             dataset=animations[0].run.dataset,
+            confusion_matrices=animations[0].run.results['val_confusion_matrices'] if add_confusion_matrix else None,
+            annotate_conf=annotate_confusion_matrix
         )
         return
 
