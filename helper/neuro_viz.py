@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -142,11 +144,9 @@ def compute_grid_losses(grid_coords, transform, ae_model, model, loss_obj, loss_
 
     for i in tqdm(range(rec_grid_models.shape[0]), desc="Computing grid losses"):
         model_flattened = rec_grid_models[i, :]
-        model_repopulated = repopulate_model(
-            model_flattened,
-            model
-        )
-        model_repopulated.eval()
+        with torch.no_grad():
+            model_repopulated = repopulate_model_fixed(model_flattened.clone(), model)
+        #model_repopulated.eval()
         model_repopulated = model_repopulated.to(device)
         loss = loss_obj.get_loss(model_repopulated, loss_name, whichloss).detach()
         grid_losses.append(loss)
@@ -177,14 +177,21 @@ class Loss:
 
     def get_loss(self, dnn, loss_name, whichloss):
         if whichloss == "mse" or whichloss == "crossentropy":
-            loss = 0
             loader = self.test_loader if loss_name == "test_loss" else self.train_loader
+
+            total_loss = 0.0
+            total_samples = 0
+            criterion = torch.nn.CrossEntropyLoss(reduction='sum')
+
             with torch.no_grad():
                 for data, target in loader:
                     output = dnn(data.to(self.device))
-                    loss += F.nll_loss(output, target.to(self.device), reduction='sum').item()
-            loss /= len(loader.dataset)
-            return torch.tensor(loss)
+                    #loss += F.nll_loss(output, target.to(self.device), reduction='sum').item()
+                    loss = criterion(output, target.to(self.device)).item()
+                    total_loss += loss
+                    total_samples += target.size(0)
+
+            return torch.tensor(total_loss / total_samples)
         else:
             raise ValueError(f"Loss type not defined: {whichloss}")
 
@@ -228,8 +235,8 @@ def compute_trajectory(
     for i in tqdm(range(trajectory_models.shape[0]), desc="Computing trajectory losses"):
         model_flattened = trajectory_models[i, :]
         assert model_flattened.numel() == sum(p.numel() for p in model.parameters()); "Mismatch in parameter size"
-        repopulate_model_fixed(model_flattened, model)
-        model.eval()
+        with torch.no_grad():
+            model = repopulate_model_fixed(model_flattened.clone(), model)
         loss = loss_obj.get_loss(model, loss_name, whichloss).detach()
         trajectory_losses.append(loss)
 
