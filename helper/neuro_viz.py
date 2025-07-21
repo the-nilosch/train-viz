@@ -62,9 +62,12 @@ def train_autoencoder(
     Saves best model to save_path.
     """
     from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+    from torch.optim.lr_scheduler import ReduceLROnPlateau
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
+    #scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
+    scheduler = ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=5, threshold=1e-3, cooldown=0, min_lr=1e-6)
     loss_fn = nn.MSELoss()
 
     best_loss = float('inf')
@@ -87,7 +90,7 @@ def train_autoencoder(
             total_loss += loss.item()
 
         avg_loss = total_loss / len(train_loader)
-        scheduler.step()
+        scheduler.step(avg_loss)
 
         losses_log.append({'epoch': epoch, 'loss': avg_loss})
 
@@ -254,3 +257,100 @@ def repopulate_model_fixed(flattened_params, model):
         param.data.copy_(sub_flattened)
         start_idx += size
     return model
+
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+import matplotlib.ticker as ticker
+import numpy as np
+
+def plot_loss_landscape(
+    xx, yy,
+    grid_losses, trajectory_losses_list, trajectory_coords_list,
+    rec_grid_models=None,
+    draw_density=True,
+    filled_contours=True,
+    cmap='viridis',
+    loss_label='Cross Entropy Loss'
+):
+    # === PREPARE LOSSES ===
+    grid_losses_pos = grid_losses.detach().cpu().numpy()
+
+    # === SHARED COLOR SCALE ===
+    traj_losses_all = np.concatenate([t for t in trajectory_losses_list])
+    all_losses = np.concatenate([grid_losses_pos.flatten(), traj_losses_all])
+    vmin = np.clip(all_losses.min() / 1.2, 1e-5, None)
+    vmax = all_losses.max() * 1.2
+
+    if vmin >= vmax or np.isclose(vmin, vmax):
+        vmax = vmin * 10
+        print(f"Adjusted nearly-constant losses: vmin={vmin}, vmax={vmax}")
+
+    levels = np.logspace(np.log10(vmin), np.log10(vmax), 30)
+    norm = LogNorm(vmin=vmin, vmax=vmax)
+
+    # === BEGIN PLOTTING ===
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    # -- 1 Loss Landscape --
+    X = xx.cpu().numpy()
+    Y = yy.cpu().numpy()
+
+    if filled_contours:
+        contour = ax.contourf(X, Y, grid_losses_pos, levels=levels, norm=norm, cmap=cmap)
+    else:
+        contour = ax.contour(X, Y, grid_losses_pos, levels=levels, norm=norm, cmap=cmap)
+        ax.clabel(contour, fmt="%.2e", fontsize=8)
+
+    cbar = plt.colorbar(contour, ax=ax, shrink=0.8)
+    ticks = np.logspace(np.log10(vmin), np.log10(vmax), 5)  # customize number here
+    cbar.set_ticks(ticks)
+    cbar.ax.set_ylabel(loss_label, fontsize=12)
+
+    # -- 2 & 3: Plot Multiple Trajectories --
+    for z_tensor, losses_tensor in zip(trajectory_coords_list, trajectory_losses_list):
+        z = z_tensor
+        losses = losses_tensor
+        # Lines
+        for i in range(len(z) - 1):
+            ax.plot([z[i, 0], z[i + 1, 0]], [z[i, 1], z[i + 1, 1]], color='k', linewidth=1)
+        # Points
+        ax.scatter(
+            z[:, 0], z[:, 1],
+            c=losses,
+            cmap=cmap,
+            norm=norm,
+            s=40,
+            edgecolors='k'
+        )
+
+    # -- 4 OPTIONAL: Density Contours --
+    if draw_density and rec_grid_models is not None:
+        try:
+            from NeuroVisualizer.neuro_aux.utils import get_density
+            density = get_density(rec_grid_models.detach().cpu().numpy(), type='inverse', p=2)
+            density = density.reshape(xx.shape)
+            density_levels = np.logspace(
+                np.log10(max(density.min(), 1e-3)),
+                np.log10(density.max()),
+                15
+            )
+            CS_density = ax.contour(
+                X, Y, density,
+                levels=density_levels,
+                colors='white',
+                linewidths=0.8
+            )
+            ax.clabel(CS_density, fmt=ticker.FormatStrFormatter('%.1f'), fontsize=7)
+        except Exception as e:
+            print("Density contour skipped:", e)
+
+    # -- 5 Labels, Grid, Style --
+    ax.set_title('Loss Landscape with Training Trajectory', fontsize=14)
+    ax.set_xlabel('Latent Dimension 1', fontsize=12)
+    ax.set_ylabel('Latent Dimension 2', fontsize=12)
+    ax.grid(True, linestyle='--', alpha=0.3)
+
+    # -- 6 Show --
+    #plt.show()
+
+    return fig

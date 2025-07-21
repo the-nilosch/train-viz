@@ -70,6 +70,9 @@ def train_model_with_embedding_tracking(
     best_loss = float('inf')
     patience_counter = 0
 
+    if save_model_weights_each_epoch:
+        run_id = _save_model(model, 0, run_id)
+
     for epoch in range(epochs):
         model.train()
         epoch_train_loss, correct_train, total_train = 0, 0, 0
@@ -194,7 +197,7 @@ def train_model_with_embedding_tracking(
 
         # Loss Landscape: Save flattened model weights
         if save_model_weights_each_epoch:
-            run_id = _save_model(model, epoch, run_id)
+            run_id = _save_model(model, epoch+1, run_id)
 
         # Live plot update
         fig, axs = _live_plot_update(num_figures=num_figures)
