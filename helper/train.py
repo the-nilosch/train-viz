@@ -164,8 +164,10 @@ def train_model_with_embedding_tracking(
                 # predictions
                 probs = softmax(output, dim=1)
                 _, preds = torch.max(output, 1)
+
                 all_preds.extend(preds.cpu().tolist())
                 all_targets.extend(target.cpu().tolist())
+                all_distributions.extend(probs.cpu().tolist())
 
         # now divide by total number of samples
         val_loss = total_loss / total_samples

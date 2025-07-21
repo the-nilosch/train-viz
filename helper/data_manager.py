@@ -18,10 +18,15 @@ def flatten_and_convert(data, parent_key='', sep='#'):
             if all(isinstance(i, (int, float, np.integer, np.floating)) for i in v):
                 v = np.array(v, dtype=np.float32)
                 items.append((new_key, v))
+            elif all(isinstance(i, list) and all(isinstance(x, (int, float)) for x in i) for i in v):
+                # Convert list-of-lists of floats to list of np arrays
+                array_list = [np.array(i, dtype=np.float32) for i in v]
+                items.append((new_key, array_list))
             elif all(isinstance(i, np.ndarray) for i in v):
                 items.append((new_key, v))
             else:
                 print(f"Skipping list at key '{new_key}': Mixed or unsupported types.")
+
 
         # Scalars
         elif isinstance(v, (int, float, np.integer, np.floating)):
