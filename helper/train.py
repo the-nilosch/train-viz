@@ -6,10 +6,11 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from torch.nn import CrossEntropyLoss
-from IPython.display import clear_output
-import logging
+from torch.nn.functional import softmax
 from torch.optim import Adam, AdamW, SGD
 from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR
+from IPython.display import clear_output
+import logging
 from sklearn.metrics import confusion_matrix
 
 import helper.plots as plots
@@ -34,6 +35,7 @@ def train_model_with_embedding_tracking(
     train_accuracies, val_accuracies = [], []
     scheduler_history = []
     val_confusion_matrices = []
+    val_distributions = []
 
     # Loss Landscape ID
     run_id = None
@@ -144,6 +146,7 @@ def train_model_with_embedding_tracking(
         model.eval()
         all_preds = []
         all_targets = []
+        all_distributions = []
         total_loss = 0.0
         total_samples = 0
 
@@ -159,6 +162,7 @@ def train_model_with_embedding_tracking(
                 total_samples += batch_size
 
                 # predictions
+                probs = softmax(output, dim=1)
                 _, preds = torch.max(output, 1)
                 all_preds.extend(preds.cpu().tolist())
                 all_targets.extend(target.cpu().tolist())
@@ -175,6 +179,7 @@ def train_model_with_embedding_tracking(
 
         val_losses.append(val_loss)
         val_accuracies.append(val_acc)
+        val_distributions.append(all_distributions)
 
         if scheduler is not None:
             if scheduler.__class__.__name__ == 'ReduceLROnPlateau':
@@ -254,6 +259,7 @@ def train_model_with_embedding_tracking(
         'train_accuracies': train_accuracies,
         'val_accuracies': val_accuracies,
         'val_confusion_matrices': val_confusion_matrices,
+        'val_distributions': val_distributions,
         'subset_embeddings': embedding_snapshots,
         'subset_labels': embedding_snapshot_labels,
         'embedding_drifts': embedding_drifts,
