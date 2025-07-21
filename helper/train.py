@@ -181,7 +181,7 @@ def train_model_with_embedding_tracking(
 
         val_losses.append(val_loss)
         val_accuracies.append(val_acc)
-        val_distributions.append(all_distributions)
+        val_distributions.append(np.array(all_distributions))
 
         if scheduler is not None:
             if scheduler.__class__.__name__ == 'ReduceLROnPlateau':
