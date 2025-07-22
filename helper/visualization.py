@@ -80,6 +80,9 @@ class Run:
         # recompute embedding drift on the subsampled embeddings
         self.embedding_drifts = calculate_embedding_drift(self.embeddings)
 
+        self.labels = self.labels[::snapshot_step]
+        self.labels = [labels[::point_step] for labels in self.labels]
+
         return self
 
     def confusion_matrix(
@@ -137,15 +140,17 @@ class Animation:
             dot_size=5,
             alpha=0.6,
             cmap='tab10',
-            axis_lim=None
+            axis_lim=None,
+            interpolate=True,
+            steps_per_transition=1,
     ):
         print("Generating plot...")
         ani = animate_projections(
             self.projections,
             self.labels,
             frame_interval=frame_interval,
-            interpolate=True,
-            steps_per_transition=1,
+            interpolate=interpolate,
+            steps_per_transition=steps_per_transition,
             figsize=figsize,
             dot_size=dot_size,
             alpha=alpha,
@@ -201,77 +206,36 @@ class Animation:
 def visualization_drift_vs_embedding_drift(projections, embedding_drifts, verbose=True, embeddings=False,
                                            figsize=(10, 3), on_ax=None):
     """
-    Visualizes the drift of embeddings and computes the Pearson correlation between
-    visualization drift and high-dimensional embedding drift for each data series.
-
-    Args:
-        projections (list of np.ndarray): Low-dimensional projections generated using
-            dimensionality reduction techniques (e.g., t-SNE or UMAP).
-        embedding_drifts (dict): Dictionary of high-dimensional embedding drift values,
-            where each key represents a skip step (e.g., 1, 2, 4, ...) and each value is an
-            array of drift measurements.
-        verbose (bool): If True, prints the correlation values for each series and the mean correlation.
-        embeddings (bool): If True, compute the embedding drift per each series.
-        figsize (tuple): Size of the figure
-
-    Returns:
-        float: Mean Pearson correlation between visualization drift and embedding drift
-            across all data series.
-        array: In special Case it's a 1D array with series correlations
+    Computes the composite similarity score between visualization and embedding drift
+    across all skip levels, and optionally visualizes the results.
     """
     if embeddings:
         embedding_drifts = calculate_embedding_drift(embedding_drifts)
     else:
         embedding_drifts = embedding_drifts.copy()
 
-    # Use the existing function to calculate visualization drift
     visualization_drifts = calculate_embedding_drift(projections)
 
-    # Ensure embedding_drifts and visualization_drifts have the same length
     assert len(visualization_drifts) == len(embedding_drifts), \
         f"Mismatch in drift lengths. Vis: {len(visualization_drifts)} vs Emb: {len(embedding_drifts)}"
 
-    # Calculate correlation per data series and store in a list
-    correlations = []
-    for i in embedding_drifts.keys():
-        emb_drift = np.asarray(embedding_drifts[i]).flatten()
-        vis_drift = np.asarray(visualization_drifts[i]).flatten()
-
-        # Check if lengths match
-        assert len(emb_drift) == len(vis_drift), f"Mismatch in series {i}: {len(emb_drift)} vs {len(vis_drift)}"
-
-        valid_mask = ~np.isnan(emb_drift) & ~np.isnan(vis_drift)
-        emb_drift = emb_drift[valid_mask]
-        vis_drift = vis_drift[valid_mask]
-
-        # Calculate Pearson correlation
-        assert len(emb_drift) == len(vis_drift), f"Mismatch in Length {len(emb_drift)} vs {len(vis_drift)}"
-        correlation, _ = pearsonr(emb_drift, vis_drift)
-        correlations.append(correlation)
-        if verbose:
-            print(f"Series {i} - Correlation: {correlation:.4f}")
-
-    # Calculate and print mean correlation
-    mean_correlation = np.mean(correlations)
+    # Compute similarity
+    mean_similarity, similarity_scores = compute_drift_similarity_score(
+        embedding_drifts, visualization_drifts, verbose=verbose
+    )
 
     if on_ax is not None:
-        # Part of larger Plot
         plots.plot_embedding_drift(on_ax, visualization_drifts, title="Visualization Drift")
-        return correlations
+        return similarity_scores
 
-    if verbose is False:
-        return mean_correlation
+    if verbose:
+        fig, axs = plt.subplots(1, 2, figsize=figsize)
+        plots.plot_embedding_drift(axs[0], visualization_drifts, title="Visualization Drift")
+        plots.plot_embedding_drift(axs[1], embedding_drifts)
+        plt.legend()
+        plt.show()
 
-    print(f"Mean Correlation: {mean_correlation:.4f}")
-
-    fig, axs = plt.subplots(1, 2, figsize=figsize)
-    plots.plot_embedding_drift(axs[0], visualization_drifts, title="Visualization Drift")
-    plots.plot_embedding_drift(axs[1], embedding_drifts)
-
-    plt.legend()
-    plt.show()
-
-    return mean_correlation
+    return mean_similarity
 
 
 def calculate_embedding_drift(embedding_snapshots, max_power=5):
@@ -297,6 +261,54 @@ def calculate_embedding_drift(embedding_snapshots, max_power=5):
                 drifts[skip].append(np.nan)
 
     return drifts
+
+from scipy.stats import pearsonr
+import numpy as np
+import matplotlib.pyplot as plt
+
+def compute_drift_similarity_score(embedding_drifts, visualization_drifts, eps=1e-6, verbose=True):
+    """
+    Computes log-transformed correlation × ratio penalty for each skip length.
+
+    Returns:
+        float: mean similarity
+        dict: similarity per skip
+    """
+    similarity_scores = {}
+
+    for k in embedding_drifts.keys():
+        emb = np.asarray(embedding_drifts[k])
+        vis = np.asarray(visualization_drifts[k])
+
+        mask = ~np.isnan(emb) & ~np.isnan(vis)
+        if np.sum(mask) < 3:
+            similarity_scores[k] = np.nan
+            continue
+
+        emb = emb[mask]
+        vis = vis[mask]
+
+        # Log-correlation
+        log_emb = np.log(emb + eps)
+        log_vis = np.log(vis + eps)
+        log_corr, _ = pearsonr(log_emb, log_vis)
+
+        # Ratio penalty with median normalization
+        emb_ratio = emb / (np.median(emb) + eps)
+        vis_ratio = vis / (np.median(vis) + eps)
+        delta = np.abs(emb_ratio - vis_ratio)
+        ratio_penalty = np.exp(-np.mean(delta))
+
+        similarity = log_corr * ratio_penalty
+        similarity_scores[k] = similarity
+
+        if verbose:
+            print(f"Skip {k} — log-corr: {log_corr:.3f}, ratio: {ratio_penalty:.3f}, similarity: {similarity:.3f}")
+
+    mean_similarity = np.nanmean(list(similarity_scores.values()))
+    if verbose:
+        print(f"\nMean Composite Similarity: {mean_similarity:.4f}")
+    return mean_similarity, similarity_scores
 
 
 def show_projections_and_drift(projections_list, titles, labels, embedding_drifts, embeddings=False, interpolate=False,
@@ -438,7 +450,7 @@ def generate_projections(
                 f'{"reverse computation, " if reverse_computation else ""}'
                 f'{"" if tsne_update == 1 else f"blending={tsne_update},"}'
                  f')')
-
+        print("Initializing t-SNE...")
         tsne = TSNE(n_components=out_dim, init=tsne_init, perplexity=tsne_perplexity, random_state=random_state,
                     metric=metric)
         tsne.fit(basis_data)
@@ -517,7 +529,7 @@ def denoise_projections(projections, blend=0.5, window_size=5, mode='window'):
 def show_animations(
         animations: list[Animation],
         custom_titles=None,
-        figsize_per_plot=(5, 5),
+        figsize_per_plot=(4, 4),
         dot_size=5,
         alpha=0.6,
         interpolate=False,
