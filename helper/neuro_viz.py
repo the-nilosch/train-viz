@@ -32,7 +32,7 @@ class FlatTensorDataset(torch.utils.data.Dataset):
         return x
 
 def calculate_mean_std_flat(file_paths):
-    tensors = [torch.load(fp, map_location='cpu', weights_only=True) for fp in file_paths]
+    tensors = [torch.load(fp, map_location='cpu', weights_only=True) for fp in tqdm(file_paths)]
     stacked = torch.stack(tensors)
     mean = stacked.mean(dim=0)
     std = stacked.std(dim=0)
