@@ -266,12 +266,19 @@ from scipy.stats import pearsonr
 import numpy as np
 import matplotlib.pyplot as plt
 
-def compute_drift_similarity_score(embedding_drifts, visualization_drifts, eps=1e-6, verbose=True):
+def compute_drift_similarity_score(embedding_drifts, visualization_drifts, eps=1e-6, verbose=True, lambda_penalty=3.0):
     """
-    Computes log-transformed correlation × ratio penalty for each skip length.
+    Computes composite similarity: log-Pearson correlation × MSE-based ratio penalty.
+
+    Args:
+        embedding_drifts (dict): Drift values for high-dimensional embeddings.
+        visualization_drifts (dict): Drift values for low-dimensional projections.
+        eps (float): Small constant to avoid division by zero or log(0).
+        verbose (bool): Whether to print per-skip values.
+        lambda_penalty (float): Strength of penalty in ratio mismatch.
 
     Returns:
-        float: mean similarity
+        float: mean similarity across all skips
         dict: similarity per skip
     """
     similarity_scores = {}
@@ -288,22 +295,26 @@ def compute_drift_similarity_score(embedding_drifts, visualization_drifts, eps=1
         emb = emb[mask]
         vis = vis[mask]
 
-        # Log-correlation
+        # Log-Pearson correlation
         log_emb = np.log(emb + eps)
         log_vis = np.log(vis + eps)
         log_corr, _ = pearsonr(log_emb, log_vis)
 
-        # Ratio penalty with median normalization
-        emb_ratio = emb / (np.median(emb) + eps)
-        vis_ratio = vis / (np.median(vis) + eps)
-        delta = np.abs(emb_ratio - vis_ratio)
-        ratio_penalty = np.exp(-np.mean(delta))
+        # MSE-based ratio penalty (soft relative error)
+        emb_median = np.median(emb) + eps
+        vis_median = np.median(vis) + eps
+        emb_ratio = emb / emb_median
+        vis_ratio = vis / vis_median
+
+        rel_error = (emb_ratio - vis_ratio) / (emb_ratio + eps)
+        mse = np.mean(rel_error ** 2)
+        ratio_penalty = np.exp(-lambda_penalty * mse)
 
         similarity = log_corr * ratio_penalty
         similarity_scores[k] = similarity
 
         if verbose:
-            print(f"Skip {k} — log-corr: {log_corr:.3f}, ratio: {ratio_penalty:.3f}, similarity: {similarity:.3f}")
+            print(f"Skip {k} — log-corr: {log_corr:.3f}, ratio penalty: {ratio_penalty:.3f}, similarity: {similarity:.3f}")
 
     mean_similarity = np.nanmean(list(similarity_scores.values()))
     if verbose:
@@ -624,3 +635,60 @@ def animate_projections(
     )
 
     return ani
+
+def compute_mphate_embeddings(run, n_components=2, random_state=42, verbose=True, intraslice_knn=2, interslice_knn=25,
+                              decay=5, t='auto', gamma=0):
+    """
+    Computes M-PHATE embeddings from a run object.
+
+    Parameters:
+        run: Run object with .embeddings (list of arrays with shape [samples, features])
+        n_components: Target dimensionality (default: 2)
+        random_state: Seed for reproducibility
+        verbose: If True, prints progress info
+
+    Returns:
+        mphate_emb: np.ndarray of shape (epochs, samples, n_components)
+    """
+    import m_phate
+
+    emb_list = run.embeddings
+    n_epochs = len(emb_list)
+    n_samples = emb_list[0].shape[0]
+
+    if verbose:
+        print(f"n_epochs: {n_epochs}")
+        print(f"n_samples: {n_samples}")
+
+    emb_tensor = np.stack(emb_list)  # shape: (epochs, samples, features)
+
+    mphate_op = m_phate.M_PHATE(
+        n_components=n_components,
+        intraslice_knn=intraslice_knn,  # Local structure sensitivity within each epoch (default 2  or 2-5)
+        interslice_knn=interslice_knn,  # Controls smoothness across time steps (default 25 or 15-30)
+        decay=decay,                    # Controls kernel sharpness (edge strength in affinities) (default 5 or 3-10)
+        t=t,                            # Diffusion scale: controls local vs. global structure (default 'auto' or 10–30)
+        gamma=gamma,                    # Influences distance potential (PHATE vs. sqrt behavior) (default 0 or 0-0.2)
+        random_state=random_state,
+        verbose=verbose
+    )
+    mphate_flat = mphate_op.fit_transform(emb_tensor)  # shape: (epochs * samples, n_components)
+
+    mphate_emb = mphate_flat.reshape(n_epochs, n_samples, n_components)
+    return mphate_emb
+
+
+def mphate_to_animation(mphate_emb, run, title="M-PHATE projection"):
+    """
+    Converts M-PHATE embedding array into an Animation object.
+
+    Parameters:
+        mphate_emb: np.ndarray of shape (T, N, D)
+        run: the original Run object
+        title: optional title for the animation
+
+    Returns:
+        Animation object
+    """
+    projections = [mphate_emb[i] for i in range(mphate_emb.shape[0])]
+    return Animation(projections=projections, title=title, run=run)

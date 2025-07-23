@@ -815,3 +815,206 @@ def _moving_average(data, window_size):
     if len(data) < window_size:
         return data  # Not enough data points to calculate the average
     return np.convolve(data, np.ones(window_size) / window_size, mode='valid')
+
+
+def plot_mphate_over_time(
+    mphate_emb,
+    run,
+    start_epoch=0,
+    end_epoch=None,
+    min_alpha=0.05,
+    max_alpha=0.9,
+    show_class_coloring=True,
+    show_epoch_coloring=True,
+    class_cmap=plt.cm.tab10,
+    epoch_cmap=plt.cm.viridis,
+    point_size=4
+):
+    """
+    Plot M-PHATE projections over time with optional class-color fading and epoch coloring.
+
+    Parameters:
+        mphate_emb: np.ndarray of shape (epochs, samples, 2)
+        run: Run object (must have .labels)
+        start_epoch: first epoch to include (default 0)
+        end_epoch: last epoch to include (exclusive, default: all)
+        min_alpha: min transparency for earliest frame
+        max_alpha: max transparency for latest frame
+        show_class_coloring: bool, plot class-colored fading
+        show_epoch_coloring: bool, plot epoch-colored snapshots
+        class_cmap: matplotlib colormap (for class labels)
+        epoch_cmap: matplotlib colormap (for epoch coloring)
+        point_size: size of each scatter point
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from helper.vision_classification import get_text_labels
+
+    n_epochs, n_samples, _ = mphate_emb.shape
+    end_epoch = end_epoch if end_epoch is not None else n_epochs
+
+    assert 0 <= start_epoch < end_epoch <= n_epochs, "Invalid epoch range."
+
+    labels = run.labels[0]
+    class_names = get_text_labels(run.dataset)
+
+    selected_emb = mphate_emb[start_epoch:end_epoch]
+    selected_norm = plt.Normalize(vmin=start_epoch, vmax=end_epoch - 1)
+    epoch_range = range(start_epoch, end_epoch)
+
+    fig, axs = plt.subplots(1, 2, figsize=(16, 7))
+
+    # --- Left: Class-colored, time-fading dots ---
+    if show_class_coloring:
+        for idx, epoch in enumerate(epoch_range):
+            alpha = min_alpha + (max_alpha - min_alpha) * ((epoch - start_epoch) / (end_epoch - start_epoch - 1))
+            axs[0].scatter(
+                selected_emb[idx, :, 0],
+                selected_emb[idx, :, 1],
+                c=[class_cmap(labels[i]) for i in range(n_samples)],
+                alpha=alpha,
+                s=point_size
+            )
+
+        axs[0].set_title(f"Class color with time-fading alpha (epochs {start_epoch}-{end_epoch})")
+        axs[0].set_xlabel("M-PHATE dim 1")
+        axs[0].set_ylabel("M-PHATE dim 2")
+
+        handles = [mpatches.Patch(color=class_cmap(i), label=class_names[i]) for i in range(10)]
+        axs[0].legend(handles=handles, title=f"{run.dataset} Classes", bbox_to_anchor=(1.05, 1), loc='upper left')
+    else:
+        axs[0].axis("off")
+
+    # --- Right: Dots colored by epoch ---
+    if show_epoch_coloring:
+        for idx, epoch in enumerate(epoch_range):
+            axs[1].scatter(
+                selected_emb[idx, :, 0],
+                selected_emb[idx, :, 1],
+                c=[epoch_cmap(selected_norm(epoch))],
+                s=point_size,
+                alpha=0.7
+            )
+
+        sm = plt.cm.ScalarMappable(cmap=epoch_cmap, norm=selected_norm)
+        fig.colorbar(sm, ax=axs[1], label="Epoch")
+
+        axs[1].set_title(f"Snapshots colored by epoch (epochs {start_epoch}-{end_epoch})")
+        axs[1].set_xlabel("M-PHATE dim 1")
+        axs[1].set_ylabel("M-PHATE dim 2")
+    else:
+        axs[1].axis("off")
+
+    plt.tight_layout()
+    plt.show()
+
+
+def show_phate_graphs(
+    animations: list,
+    start_epoch: int = 0,
+    end_epoch: int = None,
+    figsize_per_plot: tuple[float, float] = (4, 4),
+    min_alpha: float = 0.05,
+    max_alpha: float = 0.9,
+    show_class_coloring: bool = True,
+    show_epoch_coloring: bool = True,
+    class_cmap=plt.cm.tab10,
+    epoch_cmap=plt.cm.viridis,
+    point_size: float = 4,
+    show_legend: bool = False
+):
+    """
+    Compare full M-PHATE evolutions (or a slice of epochs) across multiple runs.
+
+    Parameters
+    ----------
+    animations
+        list of Animation objects (from mphate_to_animation).
+    start_epoch
+        first epoch index to include.
+    end_epoch
+        one‐past‐the‐last epoch index to include (default: run length).
+    figsize_per_plot
+        width, height in inches for each subplot.
+    min_alpha, max_alpha
+        transparency range for the time‐fading view.
+    show_class_coloring
+        whether to include the class-color‐fading panel.
+    show_epoch_coloring
+        whether to include the epoch-color-snapshot panel.
+    class_cmap
+        colormap for classes.
+    epoch_cmap
+        colormap for epochs.
+    point_size
+        marker size.
+    """
+    import matplotlib.patches as mpatches
+    from helper.vision_classification import get_text_labels
+
+    n = len(animations)
+    panels = int(show_class_coloring) + int(show_epoch_coloring)
+    if panels == 0:
+        raise ValueError("At least one of show_class_coloring or show_epoch_coloring must be True")
+
+    ncols = n
+    nrows = panels
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(figsize_per_plot[0] * ncols, figsize_per_plot[1] * nrows),
+        squeeze=False
+    )
+
+    for col, ani in enumerate(animations):
+        # recover the full embedding array
+        mphate_emb = np.stack(ani.projections)  # shape (T, N, 2)
+        T = mphate_emb.shape[0]
+        end = end_epoch if end_epoch is not None else T
+        assert 0 <= start_epoch < end <= T, "Invalid epoch range."
+        emb_slice = mphate_emb[start_epoch:end]
+        labels = ani.run.labels[0]
+        class_names = get_text_labels(ani.run.dataset)
+        epoch_norm = plt.Normalize(start_epoch, end - 1)
+
+        row = 0
+        if show_class_coloring:
+            ax = axes[row][col]
+            for i in range(end - start_epoch):
+                α = min_alpha + (max_alpha - min_alpha) * (
+                    i / max(1, (end - start_epoch - 1))
+                )
+                ax.scatter(
+                    emb_slice[i, :, 0],
+                    emb_slice[i, :, 1],
+                    c=[class_cmap(lbl) for lbl in labels],
+                    s=point_size,
+                    alpha=α,
+                )
+            ax.set_title(f"{ani.title}\n")
+            ax.set_xticks([]); ax.set_yticks([])
+            # legend
+            if show_legend:
+                handles = [
+                    mpatches.Patch(color=class_cmap(i), label=class_names[i])
+                    for i in range(len(class_names))
+                ]
+                ax.legend(handles=handles, bbox_to_anchor=(1.05, 1), loc="upper left")
+
+        if show_epoch_coloring:
+            row = int(show_class_coloring)  # puts it on row 0 if class‐plot is off, else row 1
+            ax = axes[row][col]
+            for i in range(end - start_epoch):
+                ax.scatter(
+                    emb_slice[i, :, 0],
+                    emb_slice[i, :, 1],
+                    c=[epoch_cmap(epoch_norm(start_epoch + i))],
+                    s=point_size,
+                    alpha=0.7,
+                )
+            sm = plt.cm.ScalarMappable(cmap=epoch_cmap, norm=epoch_norm)
+            fig.colorbar(sm, ax=ax, orientation="vertical", label="Epoch")
+            ax.set_title(f"{ani.title}\nEpoch‐snapshots")
+            ax.set_xticks([]); ax.set_yticks([])
+
+    plt.tight_layout()
+    plt.show()
