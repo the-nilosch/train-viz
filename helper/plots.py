@@ -1018,3 +1018,142 @@ def show_phate_graphs(
 
     plt.tight_layout()
     plt.show()
+
+
+def plot_phate_animations(
+    animations,
+    do_smoothing=True,
+    smooth_window=5,
+    smooth_alpha=0.8,
+    figsize=(8, 6),
+    dot_size=25,
+    legend_dist=0.5,
+    title="Embedding trajectories across runs (raw dots + smoothed lines)",
+    start_epoch=0,
+    end_epoch=None
+):
+    """
+    Plot embedding trajectories using raw points (dots) and smoothed lines for clarity,
+    with optional slicing by start/end epoch and smoothing control.
+    """
+    cmap = plt.cm.viridis
+    max_epochs = max(len(anim.projections) for anim in animations)
+
+    if end_epoch is None:
+        end_epoch = max_epochs
+
+    norm = plt.Normalize(vmin=start_epoch, vmax=end_epoch - 1)
+
+    plt.figure(figsize=figsize)
+    ax = plt.gca()
+
+    for anim in animations:
+        raw_traj = np.asarray(anim.projections)
+
+        # Slice raw trajectory
+        raw_slice = raw_traj[start_epoch:end_epoch]
+
+        # Compute smoothed trajectory only if enabled
+        if do_smoothing:
+            smoothed_traj = soft_smooth(raw_traj, window=smooth_window, alpha=smooth_alpha)
+            smoothed_slice = smoothed_traj[start_epoch:end_epoch]
+            ax.plot(smoothed_slice[:, 0], smoothed_slice[:, 1], label=anim.title, alpha=0.7)
+        else:
+            ax.plot(raw_slice[:, 0], raw_slice[:, 1], label=anim.title, alpha=0.7)
+
+        # Plot raw dots
+        for i, point in enumerate(raw_slice):
+            epoch = start_epoch + i
+            ax.scatter(
+                point[0], point[1],
+                color=cmap(norm(epoch)),
+                s=dot_size,
+                alpha=0.9
+            )
+
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    plt.colorbar(sm, ax=ax, label="Epoch")
+
+    ax.set_title(title)
+    ax.set_xlabel("M-PHATE dim 1")
+    ax.set_ylabel("M-PHATE dim 2")
+    ax.legend(
+        title="Training Runs",
+        loc="lower center",
+        bbox_to_anchor=(0.5, -legend_dist),
+        ncol=2,
+        frameon=False
+    )
+    plt.tight_layout()
+    plt.show()
+
+
+def soft_smooth(traj, window=5, alpha=0.9):
+    """
+    Apply a soft moving average to a 2D trajectory with shape (T, 2),
+    weighted toward the original points.
+    """
+    traj = np.asarray(traj)
+    T = traj.shape[0]
+
+    if T < window:
+        # Reduce window to valid size for very short trajectories
+        window = T if T % 2 == 1 else T - 1
+
+    half_window = window // 2
+
+    # Symmetric padding on time axis
+    padded = np.pad(traj, ((half_window, half_window), (0, 0)), mode='edge')
+
+    # Compute centered moving average
+    smoothed = np.empty_like(traj)
+    for i in range(T):
+        smoothed[i] = padded[i:i + window].mean(axis=0)
+
+    return alpha * traj + (1 - alpha) * smoothed
+
+
+
+def plot_prediction_similarity_heatmap(similarities, run_titles=None, cmap="viridis", figsize=(8, 6)):
+    """
+    Plot an interactive heatmap slider with a consistent color scale across epochs.
+
+    Args:
+        similarities: List of (n_runs x n_runs) matrices
+        run_titles: Optional list of strings for run labels
+        cmap: Matplotlib colormap name
+    """
+    import seaborn as sns
+    from ipywidgets import interact
+    n_epochs = len(similarities)
+    n_runs = similarities[0].shape[0]
+
+    if run_titles is None:
+        run_titles = [f"Run {i}" for i in range(n_runs)]
+
+    # Compute global vmin/vmax across all epochs for consistent color scale
+    all_values = np.array(similarities)
+    vmin = all_values.min()
+    vmax = all_values.max()
+
+    @interact(epoch=widgets.IntSlider(min=0, max=n_epochs - 1, step=1, value=0, description="Epoch"))
+    def _plot(epoch):
+        data = similarities[epoch] * 100
+        annot = np.array([[f"{v:.1f}%" for v in row] for row in data])
+
+        plt.figure(figsize=figsize)
+        sns.heatmap(
+            similarities[epoch],
+            yticklabels=run_titles,
+            annot=annot,
+            fmt="",  # no automatic formatting
+            cmap=cmap,
+            square=True,
+            vmin=vmin,
+            vmax=vmax
+        )
+        plt.title(f"Prediction Similarity at Epoch {epoch}")
+        plt.xlabel("Run")
+        plt.ylabel("Run")
+        plt.tight_layout()
+        plt.show()
