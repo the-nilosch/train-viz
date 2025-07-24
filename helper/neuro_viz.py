@@ -5,7 +5,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 import pandas as pd
 import os
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from NeuroVisualizer.neuro_aux.trajectories_data import NormalizeModelParameters
 from NeuroVisualizer.neuro_aux.utils import repopulate_model
 from tqdm import tqdm
@@ -38,11 +38,27 @@ def calculate_mean_std_flat(file_paths):
     std = stacked.std(dim=0)
     return mean, std
 
-def get_dataloader_flat(pt_files, batch_size, shuffle=True, num_workers=2):
+def get_dataloader_flat(
+    pt_files, batch_size,
+    shuffle=False, num_workers=2,
+    oversample_later=False, power: float = 1.0
+):
+    # compute global mean/std as before
     mean, std = calculate_mean_std_flat(pt_files)
     normalizer = NormalizeModelParameters(mean, std)
     dataset = FlatTensorDataset(pt_files, transform=normalizer)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers), normalizer
+
+    if oversample_later:
+        N = len(dataset)
+        # weight_i ∝ ((i+1)/N)**power — higher power ⇒ more focus on latest
+        raw = [(i+1)/N for i in range(N)]
+        weights = [r**power for r in raw]
+        sampler = WeightedRandomSampler(weights, num_samples=N, replacement=True)
+        return DataLoader(dataset, batch_size=batch_size,
+                          sampler=sampler, num_workers=num_workers), normalizer
+    else:
+        return DataLoader(dataset, batch_size=batch_size,
+                          shuffle=shuffle, num_workers=num_workers), normalizer
 
 ### Training
 
@@ -55,7 +71,9 @@ def train_autoencoder(
     lr=1e-3,
     patience=10,
     log_every=5,
-    verbose=True
+    verbose=False,
+    save_delta_pct: float = 0.01,       # <-- relative drop (e.g. 0.01 for 1%)
+    avoid_overheat=False
 ):
     """
     Generic improved AE training loop with early stopping and scheduler.
@@ -63,6 +81,7 @@ def train_autoencoder(
     """
     from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
     from torch.optim.lr_scheduler import ReduceLROnPlateau
+    import time
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     #scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
@@ -75,10 +94,13 @@ def train_autoencoder(
 
     losses_log = []
 
+    avg_loss = float('inf')
+    last_saved_loss = None
+
     for epoch in range(1, num_epochs + 1):
         model.train()
         total_loss = 0.0
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch}"):
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch} ({avg_loss:.4f}, {scheduler.get_last_lr()[-1]:.3e})"):
             batch = batch.to(device)
             recon, _ = model(batch)
             loss = loss_fn(recon, batch)
@@ -101,8 +123,19 @@ def train_autoencoder(
         if avg_loss < best_loss:
             best_loss = avg_loss
             epochs_no_improve = 0
-            torch.save(model.state_dict(), save_path)
-            if verbose:
+
+            # first‐time save OR enough relative drop
+            if last_saved_loss is None:
+                do_save = True
+            else:
+                rel_drop = (last_saved_loss - avg_loss) / last_saved_loss
+                do_save = (rel_drop >= save_delta_pct)
+
+            if do_save:
+                time.sleep(5)
+                torch.save(model.state_dict(), save_path)
+                last_saved_loss = avg_loss
+                #if verbose:
                 print(f"✅ New best model saved with loss {best_loss:.6f}")
         else:
             epochs_no_improve += 1
@@ -118,6 +151,11 @@ def train_autoencoder(
         if epoch % log_every == 0:
             df_log = pd.DataFrame(losses_log)
             df_log.to_csv(os.path.join(os.path.dirname(save_path), 'ae_training_log.csv'), index=False)
+
+        if avoid_overheat and epoch % 10 == 0:
+            time.sleep(20)
+            #if epoch % 20 == 0 and verbose:
+            #    input(f"Epoch {epoch} complete. Press Enter to continue…")
 
     # Final save
     df_log = pd.DataFrame(losses_log)
@@ -156,6 +194,57 @@ def compute_grid_losses(grid_coords, transform, ae_model, model, loss_obj, loss_
 
     grid_losses = torch.stack(grid_losses)
     return grid_losses
+
+def compute_grid_losses_batched(
+    grid_coords,
+    transform,
+    ae_model,
+    model,
+    loss_obj,
+    loss_name,
+    whichloss,
+    device,
+    batch_size=128
+):
+    """
+    Compute losses over a latent grid in batches.
+
+    Args:
+      grid_coords: (N×2) tensor of z-coordinates.
+      transform: NormalizeModelParameters instance.
+      ae_model: your trained autoencoder.
+      model: the “skeleton” model to repopulate.
+      loss_obj, loss_name, whichloss: passed to get_loss().
+      device: cpu / cuda.
+      batch_size: how many grid points to decode at once.
+
+    Returns:
+      Tensor of shape (N,) with the loss for each grid point.
+    """
+    ae_model.eval()
+    losses = []
+
+    # We’ll iterate over the grid in chunks:
+    for start in tqdm(range(0, grid_coords.size(0), batch_size), desc="Computing grid losses"):
+        end = start + batch_size
+        coords_batch = grid_coords[start:end].to(device)  # [B,2]
+
+        # 1) decode entire batch at once
+        with torch.no_grad():
+            rec_batch = ae_model.decoder(coords_batch)     # [B, D]
+        # 2) un-normalize
+        rec_batch = rec_batch * transform.std.to(device) + transform.mean.to(device)
+
+        # 3) repopulate & score one by one
+        for flat_weights in rec_batch:
+            # repopulate_model_fixed returns a new model instance
+            model_i = repopulate_model_fixed(flat_weights.clone().cpu(), model)
+            model_i = model_i.to(device).eval()
+            with torch.no_grad():
+                loss_i = loss_obj.get_loss(model_i, loss_name, whichloss).detach()
+            losses.append(loss_i)
+
+    return torch.stack(losses)  # [N]
 
 
 class Loss:
@@ -237,8 +326,7 @@ def compute_trajectory(
     trajectory_losses = []
     for i in tqdm(range(trajectory_models.shape[0]), desc="Computing trajectory losses"):
         model_flattened = trajectory_models[i, :]
-        print(f"Mismatch in parameter size: {model_flattened.numel()} vs {sum(p.numel() for p in model.parameters())}")
-        assert model_flattened.numel() == sum(p.numel() for p in model.parameters());
+        assert model_flattened.numel() == sum(p.numel() for p in model.parameters()); "Mismatch in parameter size."
         with torch.no_grad():
             model = repopulate_model_fixed(model_flattened.clone(), model)
         loss = loss_obj.get_loss(model, loss_name, whichloss).detach()
@@ -271,7 +359,9 @@ def plot_loss_landscape(
     draw_density=True,
     filled_contours=True,
     cmap='viridis',
-    loss_label='Cross Entropy Loss'
+    loss_label='Cross Entropy Loss',
+    trajectory_labels=None,
+    label_positions=None,
 ):
     # === PREPARE LOSSES ===
     grid_losses_pos = grid_losses.detach().cpu().numpy()
@@ -322,6 +412,48 @@ def plot_loss_landscape(
             norm=norm,
             s=40,
             edgecolors='k'
+        )
+
+    # ===== 3b: Annotate each trajectory at its last point =====
+    offset_pts = 12  # how far, in points, to shift the label
+
+    # defaults
+    n_traj = len(trajectory_coords_list)
+    if trajectory_labels is None:
+        trajectory_labels = [f"traj {i}" for i in range(n_traj)]
+    if label_positions is None:
+        label_positions = ['auto'] * n_traj
+
+    for idx, (z, losses, lab) in enumerate(zip(
+            trajectory_coords_list,
+            trajectory_losses_list,
+            trajectory_labels)):
+        x_end, y_end = float(z[-1, 0]), float(z[-1, 1])
+
+        # decide alignment
+        pos = label_positions[idx]
+        if pos != 'auto':
+            ha, va = pos
+        else:
+            dx = z[-1, 0] - z[-2, 0]
+            dy = z[-1, 1] - z[-2, 1]
+            ha = 'left'   if dx >= 0 else 'right'
+            va = 'bottom' if dy >= 0 else 'top'
+
+        # convert alignment into point‐offset direction
+        ox =  offset_pts if ha == 'left'   else (-offset_pts if ha == 'right' else 0)
+        oy =  offset_pts if va == 'bottom' else (-offset_pts if va == 'top'   else 0)
+
+        # annotate with offset
+        ax.annotate(
+            lab,
+            xy=(x_end, y_end),
+            xytext=(ox, oy),
+            textcoords='offset points',
+            ha=ha, va=va,
+            fontsize=10,
+            bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.6),
+            arrowprops=dict(arrowstyle='-', lw=0)
         )
 
     # -- 4 OPTIONAL: Density Contours --
