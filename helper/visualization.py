@@ -1,6 +1,5 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from pyparsing import results
 from scipy.stats import pearsonr
 from tqdm.notebook import tqdm
 
@@ -214,6 +213,9 @@ def visualization_drift_vs_embedding_drift(projections, embedding_drifts, verbos
     else:
         embedding_drifts = embedding_drifts.copy()
 
+    if projections.ndim == 2:  # (epochs, 2)
+        projections = [p[None, :] for p in projections]
+
     visualization_drifts = calculate_embedding_drift(projections)
 
     assert len(visualization_drifts) == len(embedding_drifts), \
@@ -261,10 +263,6 @@ def calculate_embedding_drift(embedding_snapshots, max_power=5):
                 drifts[skip].append(np.nan)
 
     return drifts
-
-from scipy.stats import pearsonr
-import numpy as np
-import matplotlib.pyplot as plt
 
 def compute_drift_similarity_score(embedding_drifts, visualization_drifts, eps=1e-6, verbose=True, lambda_penalty=3.0):
     """
@@ -600,8 +598,6 @@ def animate_projections(
         title_base='Embedding Evolution',
         axis_lim=None
 ):
-    import numpy as np
-    import matplotlib.pyplot as plt
     import matplotlib.animation as animation
 
     # Interpolate if requested
@@ -692,3 +688,119 @@ def mphate_to_animation(mphate_emb, run, title="M-PHATE projection"):
     """
     projections = [mphate_emb[i] for i in range(mphate_emb.shape[0])]
     return Animation(projections=projections, title=title, run=run)
+
+
+def mphate_on_runs(runs, titles=None):
+    """
+    Generate M-PHATE projections and Animation objects for a set of training runs.
+    Optionally use custom titles per run.
+    """
+    import m_phate
+    all_run_flattened = []
+
+    for run in runs:
+        emb_list = run.embeddings
+        flattened_epochs = [emb.reshape(-1) for emb in emb_list]
+        flattened_tensor = np.stack(flattened_epochs)
+        all_run_flattened.append(flattened_tensor)
+
+    all_run_flattened = np.stack(all_run_flattened)
+    combined_emb = np.transpose(all_run_flattened, (1, 0, 2))
+
+    mphate_op = m_phate.M_PHATE()
+    mphate_emb = mphate_op.fit_transform(combined_emb)
+
+    n_epochs, n_runs = combined_emb.shape[:2]
+    mphate_emb = mphate_emb.reshape(n_epochs, n_runs, 2)
+    mphate_trajectories = np.transpose(mphate_emb, (1, 0, 2))
+
+    animations = []
+    for idx, run in enumerate(runs):
+        title = titles[idx] if titles is not None else run.results["train_config"]
+        anim = Animation(
+            projections=mphate_trajectories[idx],
+            title=title,
+            run=run
+        )
+        animations.append(anim)
+
+    return animations
+
+
+def mphate_on_predictions(runs, titles=None):
+    """
+    Apply M-PHATE to the prediction distributions (val_distributions) across runs.
+    Returns a list of Animation objects, one per run, with projections over epochs.
+    """
+    import m_phate
+
+    all_run_flattened = []
+
+    for run in runs:
+        preds_per_epoch = run.results["val_distributions"]  # list of (samples, classes)
+        flattened_epochs = [pred.reshape(-1) for pred in preds_per_epoch]  # shape: (samples * classes,)
+        flattened_tensor = np.stack(flattened_epochs)  # shape: (epochs, flat_dim)
+        all_run_flattened.append(flattened_tensor)
+
+    all_run_flattened = np.stack(all_run_flattened)  # shape: (n_runs, epochs, flat_dim)
+    combined_pred = np.transpose(all_run_flattened, (1, 0, 2))  # (epochs, runs, features)
+
+    # Run M-PHATE
+    mphate_op = m_phate.M_PHATE(knn_dist="cosine", mds_dist="cosine")
+    mphate_emb = mphate_op.fit_transform(combined_pred)  # shape: (epochs * runs, 2)
+
+    n_epochs, n_runs = combined_pred.shape[:2]
+    mphate_emb = mphate_emb.reshape(n_epochs, n_runs, 2)
+    mphate_trajectories = np.transpose(mphate_emb, (1, 0, 2))  # shape: (runs, epochs, 2)
+
+    # Wrap into Animation objects
+    animations = []
+    for idx, run in enumerate(runs):
+        title = titles[idx] if titles is not None else run.results["train_config"]
+        anim = Animation(
+            projections=mphate_trajectories[idx],
+            title=title,
+            run=run
+        )
+        animations.append(anim)
+
+    return animations
+
+def compute_prediction_similarities(runs, similarity="cosine"):
+    """
+    Compute pairwise similarities of prediction distributions across multiple runs over time.
+
+    Args:
+        runs: List of Run objects, each with results["val_distributions"] as a list of (samples, num_classes)
+        similarity: 'cosine' (default) or 'l2'
+
+    Returns:
+        similarities: List of similarity matrices, each of shape (n_runs, n_runs) for each epoch
+    """
+    from sklearn.metrics.pairwise import cosine_similarity
+    from scipy.spatial.distance import cdist
+
+    n_runs = len(runs)
+    n_epochs = len(runs[0].results["val_distributions"])
+    similarities = []
+
+    for epoch in range(n_epochs):
+        epoch_vectors = []
+        for run in runs:
+            dist = run.results["val_distributions"][epoch]  # shape: (samples, classes)
+            flat = dist.reshape(-1)
+            epoch_vectors.append(flat)
+
+        epoch_vectors = np.stack(epoch_vectors)  # shape: (n_runs, flattened)
+
+        if similarity == "cosine":
+            sim = cosine_similarity(epoch_vectors)
+        elif similarity == "l2":
+            sim = -cdist(epoch_vectors, epoch_vectors, metric="euclidean")
+        else:
+            raise ValueError(f"Unsupported similarity metric: {similarity}")
+
+        similarities.append(sim)
+
+    return similarities  # List of (n_runs, n_runs)
+
