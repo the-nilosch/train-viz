@@ -237,7 +237,8 @@ def compute_trajectory(
     trajectory_losses = []
     for i in tqdm(range(trajectory_models.shape[0]), desc="Computing trajectory losses"):
         model_flattened = trajectory_models[i, :]
-        assert model_flattened.numel() == sum(p.numel() for p in model.parameters()); "Mismatch in parameter size"
+        print(f"Mismatch in parameter size: {model_flattened.numel()} vs {sum(p.numel() for p in model.parameters())}")
+        assert model_flattened.numel() == sum(p.numel() for p in model.parameters());
         with torch.no_grad():
             model = repopulate_model_fixed(model_flattened.clone(), model)
         loss = loss_obj.get_loss(model, loss_name, whichloss).detach()
