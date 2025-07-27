@@ -18,11 +18,25 @@ class Run:
         self.embeddings = self.results["subset_embeddings"]
         self.labels = self.results["subset_labels"]
 
+        self.cka_similarities = None
+        self.cka_similarities_denoised = {}
+
+    def get_cka_similarities(self):
+        if self.cka_similarities is None:
+            self.cka_similarities = calculate_cka_similarities(self.embeddings)
+        return self.cka_similarities
+
     def load(self):
         loaded_results = load_training_data(self.run_id)
         loaded_results["embedding_drifts"] = {int(k): loaded_results["embedding_drifts"][k] for k in
                                        sorted(loaded_results["embedding_drifts"].keys(), key=int)}
         return loaded_results
+
+    def reload(self):
+        self.results = self.load()
+        self.embedding_drifts = self.results['embedding_drifts']
+        self.embeddings = self.results["subset_embeddings"]
+        self.labels = self.results["subset_labels"]
 
     def plot_training_records(self):
         fig, axs = plt.subplots(2, 2, figsize=(10, 8))
@@ -36,8 +50,14 @@ class Run:
             plots.plot_scheduled_lr(axs[1][0], self.results["scheduler_history"])
         plots.plot_embedding_drift(axs[1][1], self.results["embedding_drifts"])
 
-    def plot_embedding_drifts(self, doubled_lines = True):
-        embedding_drifts = self.embedding_drifts.copy()
+    def plot_embedding_drifts(self, doubled_lines = True, y_lim=None, metric='euclidean'):
+        if metric == 'euclidean':
+            embedding_drifts = self.embedding_drifts.copy()
+        elif metric == 'manhattan':
+            embedding_drifts = calculate_embedding_drift(self.embeddings, metric='manhattan')
+        else:
+            raise ValueError(f"Not implemented metric {metric}")
+
         fig, axs = plt.subplots(1, 1, figsize=(10, 4))
 
         # Plot 2x Drifts
@@ -51,9 +71,104 @@ class Run:
             axs.plot(range(1, len(embedding_drifts[8]) + 1), np.array(embedding_drifts[8]) * 2, color="red",
                      label="2x Drift 2", alpha=0.3)
 
-        plots.plot_embedding_drift(axs, embedding_drifts, max_multiply=1.5)
+        plots.plot_embedding_drift(axs, embedding_drifts, max_multiply=1.5, y_lim=y_lim)
 
         plt.legend()
+        plt.show()
+
+    def plot_embedding_drifts_manhattan(self, doubled_lines = True, y_lim=None):
+        embedding_drifts = self.embedding_drifts.copy()
+        embedding_drifts_manhattan = calculate_embedding_drift(self.embeddings, metric='manhattan')
+
+        fig, axs = plt.subplots(1, 1, figsize=(10, 4))
+
+        # Plot scaled Drifts
+        n = np.array(embedding_drifts_manhattan[1]).mean() / np.array(embedding_drifts[1]).mean()
+        if doubled_lines:
+            axs.plot(range(1, len(embedding_drifts[1]) + 1), np.array(embedding_drifts[1]) * n, color="green",
+                     label="Eucl. Drift 1", alpha=0.3)
+            axs.plot(range(1, len(embedding_drifts[2]) + 1), np.array(embedding_drifts[2]) * n, color="blue",
+                     label="Eucl. Drift 2", alpha=0.3)
+            axs.plot(range(1, len(embedding_drifts[4]) + 1), np.array(embedding_drifts[4]) * n, color="orange",
+                     label="Eucl. Drift 4", alpha=0.3)
+            axs.plot(range(1, len(embedding_drifts[8]) + 1), np.array(embedding_drifts[8]) * n, color="red",
+                     label="Eucl. Drift 8", alpha=0.3)
+            axs.plot(range(1, len(embedding_drifts[8]) + 1), np.array(embedding_drifts[16] * n), color="purple",
+                     label="Eucl. Drift 16", alpha=0.3)
+
+        plots.plot_embedding_drift(axs, embedding_drifts_manhattan, max_multiply=1.5, y_lim=y_lim,
+                                   title="Embedding Drift Manhattan vs Euclidean Distance")
+
+        plt.legend()
+        plt.show()
+
+    def plot_cka_similarities(self, doubled_lines = True, flip=True, y_lim=None):
+        cka_similarities = self.get_cka_similarities()
+        fig, axs = plt.subplots(1, 1, figsize=(10, 4))
+
+        if flip:
+            cka_similarities = {
+                k: [1 - x if not np.isnan(x) else np.nan for x in v]
+                for k, v in cka_similarities.items()
+            }
+
+        # Plot 2x Drifts
+        if doubled_lines:
+            axs.plot(range(1, len(cka_similarities[1]) + 1), np.array(cka_similarities[1]) * 2, color="green",
+                     label="2x Drift 1", alpha=0.3)
+            axs.plot(range(1, len(cka_similarities[2]) + 1), np.array(cka_similarities[2]) * 2, color="blue",
+                     label="2x Drift 2", alpha=0.3)
+            axs.plot(range(1, len(cka_similarities[4]) + 1), np.array(cka_similarities[4]) * 2, color="orange",
+                     label="2x Drift 2", alpha=0.3)
+            axs.plot(range(1, len(cka_similarities[8]) + 1), np.array(cka_similarities[8]) * 2, color="red",
+                     label="2x Drift 2", alpha=0.3)
+
+        plots.plot_embedding_drift(axs, cka_similarities,
+                                   title=f"CKA Similarities{' (1 - Sim)' if flip else ''}",
+                                   max_multiply=1.5,
+                                   y_lim=y_lim)
+
+        plt.legend()
+        plt.show()
+
+    def plot_curvature_distribution(self):
+        """
+        Computes per-sample curvature of embedding trajectories over time
+        and plots mean ± standard deviation.
+        """
+        embeddings = np.array(self.embeddings)  # shape: (T, N, D)
+        T = embeddings.shape[0]
+
+        curvature_matrix = []
+
+        for t in tqdm(range(1, T - 1), desc="Computing curvature distribution"):
+            delta_prev = embeddings[t] - embeddings[t - 1]
+            delta_next = embeddings[t + 1] - embeddings[t]
+
+            dot_products = np.sum(delta_prev * delta_next, axis=1)
+            norms_prev = np.linalg.norm(delta_prev, axis=1)
+            norms_next = np.linalg.norm(delta_next, axis=1)
+            denom = norms_prev * norms_next + 1e-8
+
+            cos_angles = np.clip(dot_products / denom, -1.0, 1.0)
+            angles = np.arccos(cos_angles)  # shape: (N,)
+            curvature_matrix.append(angles)
+
+        curvature_matrix = np.array(curvature_matrix)  # shape: (T-2, N)
+
+        mean_curv = curvature_matrix.mean(axis=1)
+        std_curv = curvature_matrix.std(axis=1)
+
+        plt.figure(figsize=(8, 5))
+        plt.plot(range(1, T - 1), mean_curv, label="Mean Curvature")
+        plt.fill_between(range(1, T - 1), mean_curv - std_curv, mean_curv + std_curv,
+                         alpha=0.3, label="±1 Std Dev")
+        plt.xlabel("Epoch")
+        plt.ylabel("Trajectory Curvature (radians)")
+        plt.title("Mean ± Std of Trajectory Curvature")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
         plt.show()
 
     def print_info(self):
@@ -78,6 +193,7 @@ class Run:
 
         # recompute embedding drift on the subsampled embeddings
         self.embedding_drifts = calculate_embedding_drift(self.embeddings)
+        self.cka_similarities = calculate_cka_similarities(self.embeddings)
 
         self.labels = self.labels[::snapshot_step]
         self.labels = [labels[::point_step] for labels in self.labels]
@@ -104,6 +220,29 @@ class Run:
             interval=interval
         )
 
+    def eigenvalues(self, num_components = 10, figsize=(10, 6)):
+        from sklearn.decomposition import PCA
+
+        eigenvalues_over_time = []
+
+        for E_t in self.embeddings:  # E_t has shape (N, D)
+            pca = PCA(n_components=num_components)
+            pca.fit(E_t)
+            eigenvalues_over_time.append(pca.explained_variance_)
+
+        eigenvalues_over_time = np.array(eigenvalues_over_time)  # shape (T, num_components)
+
+        # Plot
+        plt.figure(figsize=figsize)
+        for i in range(num_components):
+            plt.plot(eigenvalues_over_time[:, i], label=f'PC {i + 1}')
+        plt.xlabel("Epoch")
+        plt.ylabel("Eigenvalue (Explained Variance)")
+        plt.title("Top 10 PCA Eigenvalues Over Time")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
 
 class Animation:
     def __init__(self, projections: list, title: str, run: Run):
@@ -114,9 +253,15 @@ class Animation:
         self.run_id = run.run_id
         self.labels = run.labels
         self.embedding_drifts = run.embedding_drifts.copy()
+        self.cka_similarities = run.cka_similarities.copy() if run.cka_similarities is not None else None
 
     def copy(self):
         return Animation(self.projections.copy(), self.title, self.run)
+
+    def get_cka_similarities(self):
+        if self.cka_similarities is None:
+            self.cka_similarities = self.run.get_cka_similarities()
+        return self.cka_similarities
 
     def plot(self, figsize=(5, 5), dot_size=5, alpha=0.5, interpolate=False, steps_per_transition=10, symmetric=False):
         plots.show_with_slider(
@@ -165,15 +310,18 @@ class Animation:
 
         print(filename)
 
-    def evaluate(self, verbose=True, figsize=(10, 3)):
+    def evaluate(self, verbose=True, figsize=(10, 3), y_lim=None, metric="euclidean"):
         return visualization_drift_vs_embedding_drift(
             self.projections,
-            self.embedding_drifts,
+            self.embedding_drifts if metric == 'euclidean' else calculate_embedding_drift(self.run.embeddings, metric=metric),
+            self.get_cka_similarities(),
             verbose=verbose,
             figsize=figsize,
+            y_lim=y_lim,
         )
 
-    def denoise(self, blend=0.9, window_size=15, mode='window', do_projections=True, do_embedding_drift=True):
+    def denoise(self, blend=0.9, window_size=15, mode='window', do_projections=True, do_embedding_drift=True,
+                do_cka_similarities=True):
         copy = self.copy()
 
         if do_projections:
@@ -194,6 +342,22 @@ class Animation:
                 )
             )
 
+        if do_cka_similarities:
+            key = f"{mode}-{blend}" if mode == 'exponential' else f"{mode}-{blend}-{window_size}"
+            if key in self.run.cka_similarities_denoised.keys():
+                copy.cka_similarities = self.run.cka_similarities_denoised[key]
+            else:
+                print(f"As do_cka_similarities=True, compute cka similarities for denoised projections: {key}")
+                self.run.cka_similarities_denoised[key] = calculate_cka_similarities(
+                    denoise_projections(
+                        self.run.embeddings,
+                        window_size=window_size,
+                        blend=blend,
+                        mode=mode
+                    )
+                )
+            copy.cka_similarities = self.run.cka_similarities_denoised[key]
+
         return copy
 
 
@@ -202,8 +366,8 @@ class Animation:
 
 
 
-def visualization_drift_vs_embedding_drift(projections, embedding_drifts, verbose=True, embeddings=False,
-                                           figsize=(10, 3), on_ax=None):
+def visualization_drift_vs_embedding_drift(projections, embedding_drifts, cka_similarities, verbose=True, embeddings=False,
+                                           figsize=(10, 3), on_ax=None, y_lim=None):
     """
     Computes the composite similarity score between visualization and embedding drift
     across all skip levels, and optionally visualizes the results.
@@ -213,58 +377,105 @@ def visualization_drift_vs_embedding_drift(projections, embedding_drifts, verbos
     else:
         embedding_drifts = embedding_drifts.copy()
 
-    if projections.ndim == 2:  # (epochs, 2)
+    if type(projections) is not list and projections.ndim == 2:  # (epochs, 2)
         projections = [p[None, :] for p in projections]
 
     visualization_drifts = calculate_embedding_drift(projections)
 
-    assert len(visualization_drifts) == len(embedding_drifts), \
-        f"Mismatch in drift lengths. Vis: {len(visualization_drifts)} vs Emb: {len(embedding_drifts)}"
+    assert len(visualization_drifts) == len(embedding_drifts) and len(cka_similarities) == len(visualization_drifts), \
+        (f"Mismatch in drift lengths. "
+         f"Vis: {len(visualization_drifts)} vs Emb: {len(embedding_drifts)} vs CKA: {len(cka_similarities)}")
+
+    # Flip Similarities
+    cka_similarities = {
+        k: [1 - x if not np.isnan(x) else np.nan for x in v]
+        for k, v in cka_similarities.items()
+    }
 
     # Compute similarity
-    mean_similarity, similarity_scores = compute_drift_similarity_score(
-        embedding_drifts, visualization_drifts, verbose=verbose
+    mean_drift_sim, drift_sim_scores = compute_drift_similarity_score(
+        embedding_drifts, visualization_drifts, verbose=verbose, similarity_name="Total Mean Sim. to EMBEDDING DRIFT"
+    )
+    mean_cka_sim, cka_sim_scores = compute_drift_similarity_score(
+        cka_similarities, visualization_drifts, verbose=verbose, similarity_name="Total Mean Sim. to CKA SIMILARITY"
     )
 
     if on_ax is not None:
-        plots.plot_embedding_drift(on_ax, visualization_drifts, title="Visualization Drift")
-        return similarity_scores
+        plots.plot_embedding_drift(cka_sim_scores, visualization_drifts, title="Visualization Drift")
+        return drift_sim_scores, cka_sim_scores
 
     if verbose:
-        fig, axs = plt.subplots(1, 2, figsize=figsize)
-        plots.plot_embedding_drift(axs[0], visualization_drifts, title="Visualization Drift")
-        plots.plot_embedding_drift(axs[1], embedding_drifts)
+        fig, axs = plt.subplots(1, 3, figsize=figsize)
+        plots.plot_embedding_drift(axs[0], visualization_drifts, title="Visualization Drift", y_lim=y_lim)
+        plots.plot_embedding_drift(axs[1], embedding_drifts, y_lim=y_lim)
+        plots.plot_embedding_drift(axs[2], cka_similarities, title="CKA Similarities (flipped)",)
         plt.legend()
         plt.show()
 
-    return mean_similarity
+    return mean_drift_sim, mean_cka_sim
 
 
-def calculate_embedding_drift(embedding_snapshots, max_power=5):
+def calculate_embedding_drift(embedding_snapshots, max_power=5, metric='euclidean'):
     """
     Calculate embedding drift based on the snapshots.
-    Drift is calculated as the mean Euclidean distance between snapshots.
+    Drift is calculated as the mean distance (Euclidean or Manhattan) between snapshots.
     Uses skip steps as powers of 2 (i.e., 1, 2, 4, 8, ...).
+
+    Parameters:
+        embedding_snapshots: list or array of shape (T, N, D)
+        max_power: maximum power of 2 for skip steps
+        metric: 'euclidean' (L2) or 'manhattan' (L1)
     """
+    assert metric in ('euclidean', 'manhattan'), "Metric must be 'euclidean' or 'manhattan'"
+
     drifts = {2 ** n: [] for n in range(max_power)}
 
-    # Iterate over all snapshots
     for i in range(1, len(embedding_snapshots)):
         current_snapshot = embedding_snapshots[i]
 
-        # Compare with previous snapshots using 2^n steps
         for n in range(max_power):
             skip = 2 ** n
             if i - skip >= 0:
                 previous_snapshot = embedding_snapshots[i - skip]
-                drift = np.linalg.norm(current_snapshot - previous_snapshot, axis=1).mean()
+                if metric == 'euclidean':
+                    drift = np.linalg.norm(current_snapshot - previous_snapshot, axis=1).mean()
+                elif metric == 'manhattan':
+                    drift = np.abs(current_snapshot - previous_snapshot).sum(axis=1).mean()
                 drifts[skip].append(drift)
             else:
                 drifts[skip].append(np.nan)
 
     return drifts
 
-def compute_drift_similarity_score(embedding_drifts, visualization_drifts, eps=1e-6, verbose=True, lambda_penalty=3.0):
+def calculate_cka_similarities(embedding_snapshots, max_power=5):
+    """
+    Calculate CKA similarity between embedding snapshots over time.
+    Similarity is computed between time t and t - skip, using skip steps 2^n.
+    Returns a dictionary: {skip: [cka_1, cka_2, ...]} aligned with time steps.
+    """
+    similarities = {2 ** n: [] for n in range(max_power)}
+    T = len(embedding_snapshots)
+
+    for i in tqdm(range(1, T), desc="Calculating CKA similarities"):
+        current = embedding_snapshots[i]
+
+        for n in range(max_power):
+            skip = 2 ** n
+            if i - skip >= 0:
+                previous = embedding_snapshots[i - skip]
+                cka = compute_cka(current, previous)
+                similarities[skip].append(cka)
+            else:
+                similarities[skip].append(np.nan)
+
+    return similarities
+
+def compute_drift_similarity_score(embedding_drifts,
+                                   visualization_drifts,
+                                   eps=1e-6,
+                                   verbose=True,
+                                   lambda_penalty=3.0,
+                                   similarity_name="Mean Composite Similarity"):
     """
     Computes composite similarity: log-Pearson correlation × MSE-based ratio penalty.
 
@@ -274,6 +485,7 @@ def compute_drift_similarity_score(embedding_drifts, visualization_drifts, eps=1
         eps (float): Small constant to avoid division by zero or log(0).
         verbose (bool): Whether to print per-skip values.
         lambda_penalty (float): Strength of penalty in ratio mismatch.
+        similarity_name: (string)
 
     Returns:
         float: mean similarity across all skips
@@ -312,11 +524,11 @@ def compute_drift_similarity_score(embedding_drifts, visualization_drifts, eps=1
         similarity_scores[k] = similarity
 
         if verbose:
-            print(f"Skip {k} — log-corr: {log_corr:.3f}, ratio penalty: {ratio_penalty:.3f}, similarity: {similarity:.3f}")
+            print(f"Skip {k} — log-corr: {log_corr:.3f}, ratio pen: {ratio_penalty:.3f}, total: {similarity:.3f}")
 
     mean_similarity = np.nanmean(list(similarity_scores.values()))
     if verbose:
-        print(f"\nMean Composite Similarity: {mean_similarity:.4f}")
+        print(f"{similarity_name}: {mean_similarity:.4f}")
     return mean_similarity, similarity_scores
 
 
@@ -369,53 +581,22 @@ def show_projections_and_drift(projections_list, titles, labels, embedding_drift
         print(f"{titles[i]}: {correlation_means[i]} = {correlations_list[i]}")
 
 
-def generate_projections(
+def generate_pca_animation(
         run: Run,
-        method='pca',
-        pca_fit_basis='all',
+        fit_basis='all',
         max_frames=None,
-        reverse_computation=False,
-        random_state=42,
-        tsne_init='pca',  # 'pca' or 'random'
-        tsne_perplexity=30.0,  # often between 5–50
-        tsne_update=1,
-        umap_n_neighbors=15,
-        umap_min_dist=0.1,
-        metric='euclidean',  # for umap and tsne
         window_size=10,
-        out_dim=2  # 2D vs 3D
+        out_dim=2,  # 2D vs 3D
+        fit_basis_n=5,
 ):
     from sklearn.decomposition import PCA
-    from sklearn.manifold import TSNE
-    import umap
-    import numpy as np
-
-    assert method in ['tsne', 'pca', 'umap']
-    assert pca_fit_basis in ['first', 'last', 'all', 'last_visualized', 'window', int]
 
     projections = []
     embeddings_list = run.embeddings.copy()
     max_frames = max_frames or len(embeddings_list)
-    title="dummy"
 
-    # Determine basis data
-    if isinstance(pca_fit_basis, int):
-        basis_data = embeddings_list[pca_fit_basis]
-    elif pca_fit_basis == 'first':
-        basis_data = embeddings_list[0]
-    elif pca_fit_basis == 'last':
-        basis_data = embeddings_list[-1]
-    elif pca_fit_basis == 'last_visualized':
-        basis_data = embeddings_list[max_frames - 1]
-    elif pca_fit_basis == 'all':
-        basis_data = np.concatenate(embeddings_list, axis=0)
-    elif pca_fit_basis == 'window':
-        basis_data = embeddings_list[0]
-    else:
-        raise ValueError(f"Invalid pca_fit_basis: {pca_fit_basis}")
-
-    if method == 'pca' and pca_fit_basis == 'window':
-        title = f'PCA on window (size {window_size})'
+    if fit_basis == 'window':
+        title = f'PCA window ({window_size})'
         from scipy.linalg import orthogonal_procrustes
 
         prev_components = None
@@ -445,57 +626,130 @@ def generate_projections(
             prev_components = reducer.components_.copy()
             prev_projection = projection.copy()
 
-    elif method == 'pca':
-        title = f'PCA on {pca_fit_basis}'
+    else:
+        # Determine basis data
+        if isinstance(fit_basis, int):
+            basis_data = embeddings_list[fit_basis]
+        elif fit_basis == 'first':
+            basis_data = embeddings_list[0]
+        elif fit_basis == 'last':
+            basis_data = embeddings_list[max_frames - 1]
+        elif fit_basis == 'all':
+            basis_data = np.concatenate(embeddings_list, axis=0)
+        elif fit_basis == 'all_n':
+            basis_data = np.concatenate(embeddings_list[::fit_basis_n], axis=0)
+        else:
+            raise ValueError(f"Invalid pca_fit_basis: {fit_basis}")
+
+        title = f'PCA on {fit_basis}'
         reducer = PCA(n_components=out_dim)
         reducer.fit(basis_data)
         for i in tqdm(range(max_frames), desc="PCA frames"):
             projections.append(reducer.transform(embeddings_list[i]))
 
-    elif method == 'tsne':
-        title = (f't-SNE (init={tsne_init}, '
-                f'perplexity={tsne_perplexity}, '
-                f'{metric}, '
-                f'{"reverse computation, " if reverse_computation else ""}'
-                f'{"" if tsne_update == 1 else f"blending={tsne_update},"}'
-                 f')')
-        print("Initializing t-SNE...")
-        tsne = TSNE(n_components=out_dim, init=tsne_init, perplexity=tsne_perplexity, random_state=random_state,
-                    metric=metric)
-        tsne.fit(basis_data)
-        if reverse_computation:
-            projections = [None] * max_frames
-            projections[-1] = tsne.fit_transform(embeddings_list[max_frames - 1])
-            for i in tqdm(
-                    range(max_frames - 2, -1, -1),  # start, stop, step
-                    desc="t-SNE frames"):
-                tsne = TSNE(n_components=out_dim, init=projections[i + 1], perplexity=tsne_perplexity,
-                            random_state=random_state, metric=metric)
-                new = tsne.fit_transform(embeddings_list[i]) * tsne_update + projections[i + 1] * (1 - tsne_update)
-                projections[i] = tsne.fit_transform(new)
-        else:
-            projections.append(tsne.fit_transform(embeddings_list[0]))
-            for i in tqdm(range(1, max_frames), desc="t-SNE frames"):
-                tsne = TSNE(n_components=out_dim, init=projections[-1], perplexity=tsne_perplexity,
-                            random_state=random_state, metric=metric)
-                new = tsne.fit_transform(embeddings_list[i]) * tsne_update + projections[-1] * (1 - tsne_update)
-                projections.append(new)
+    return Animation(projections=projections, title=title, run=run)
 
-    elif method == 'umap':
-        title = (f'UMAP (n={umap_n_neighbors}, dist={umap_min_dist}, {metric}, '
-                f'{"reverse computation, " if reverse_computation else ""}'
-                 f')')
-        reducer = umap.UMAP(n_components=out_dim, n_neighbors=umap_n_neighbors, min_dist=umap_min_dist, metric=metric)
-        if reverse_computation:
-            for i in tqdm(range(max_frames - 1, -1, -1), desc="UMAP frames"):
-                reducer.fit(embeddings_list[i])
-                projection = reducer.transform(embeddings_list[i])
-                projections.insert(0, projection)
-        else:
-            reducer.fit(basis_data)
-            for i in tqdm(range(max_frames), desc="UMAP frames"):
-                projection = reducer.transform(embeddings_list[i])
-                projections.append(projection)
+
+def generate_tsne_animation(
+        run: Run,
+        max_frames=None,
+        reverse_computation=False,
+        random_state=42,
+        tsne_init='pca',  # 'pca' or 'random'
+        tsne_perplexity=30.0,  # often between 5–50
+        tsne_update=1,
+        metric='euclidean',  # for umap and tsne
+        out_dim=2,  # 2D vs 3D
+):
+    from sklearn.manifold import TSNE
+
+    projections = []
+    embeddings_list = run.embeddings.copy()
+    max_frames = max_frames or len(embeddings_list)
+
+    title = (f't-SNE (init={tsne_init}, '
+            f'perplexity={tsne_perplexity}, '
+            f'{metric}, '
+            f'{"reverse computation, " if reverse_computation else ""}'
+            f'{"" if tsne_update == 1 else f"blending={tsne_update},"}'
+             f')')
+    print("Initializing t-SNE...")
+    tsne = TSNE(n_components=out_dim, init=tsne_init, perplexity=tsne_perplexity, random_state=random_state,
+                metric=metric)
+    if reverse_computation:
+        tsne.fit(embeddings_list[max_frames - 1]) # Last Visualized frame
+        projections = [None] * max_frames
+        projections[-1] = tsne.fit_transform(embeddings_list[max_frames - 1])
+        for i in tqdm(
+                range(max_frames - 2, -1, -1),  # start, stop, step
+                desc="t-SNE frames"):
+            tsne = TSNE(n_components=out_dim, init=projections[i + 1], perplexity=tsne_perplexity,
+                        random_state=random_state, metric=metric)
+            new = tsne.fit_transform(embeddings_list[i]) * tsne_update + projections[i + 1] * (1 - tsne_update)
+            projections[i] = tsne.fit_transform(new)
+    else:
+        tsne.fit(embeddings_list[0]) # Fit on first
+        projections.append(tsne.fit_transform(embeddings_list[0]))
+        for i in tqdm(range(1, max_frames), desc="t-SNE frames"):
+            tsne = TSNE(n_components=out_dim, init=projections[-1], perplexity=tsne_perplexity,
+                        random_state=random_state, metric=metric)
+            new = tsne.fit_transform(embeddings_list[i]) * tsne_update + projections[-1] * (1 - tsne_update)
+            projections.append(new)
+
+
+    return Animation(projections=projections, title=title, run=run)
+
+
+
+def generate_umap_animation(
+        run: Run,
+        fit_basis='all',
+        max_frames=None,
+        reverse_computation=False,
+        random_state=None,
+        umap_n_neighbors=15,
+        umap_min_dist=0.1,
+        metric='euclidean',  # for umap and tsne
+        out_dim=2,  # 2D vs 3D
+        fit_basis_n=5,
+):
+    import umap
+
+    projections = []
+    embeddings_list = run.embeddings.copy()
+    max_frames = max_frames or len(embeddings_list)
+
+    # Determine basis data
+    if fit_basis == 'first':
+        basis_data = embeddings_list[0]
+    elif fit_basis == 'last':
+        basis_data = embeddings_list[max_frames - 1]
+    elif fit_basis == 'all':
+        basis_data = np.concatenate(embeddings_list, axis=0)
+    elif fit_basis == 'all_n':
+        basis_data = np.concatenate(embeddings_list[::fit_basis_n], axis=0)
+    else:
+        raise ValueError(f"Invalid pca_fit_basis: {fit_basis}")
+
+    title = (f'UMAP (n={umap_n_neighbors}, dist={umap_min_dist}, {metric}, '
+            f'{"reverse computation, " if reverse_computation else ""}'
+             f')')
+    reducer = umap.UMAP(n_components=out_dim,
+                        n_neighbors=umap_n_neighbors,
+                        min_dist=umap_min_dist,
+                        metric=metric,
+                        random_state=random_state)
+    if reverse_computation:
+        for i in tqdm(range(max_frames - 1, -1, -1), desc="UMAP frames"):
+            reducer.fit(embeddings_list[i])
+            projection = reducer.transform(embeddings_list[i])
+            projections.insert(0, projection)
+    else:
+        print(f"Fit UMAP on basis data: {fit_basis}")
+        reducer.fit(basis_data)
+        for i in tqdm(range(max_frames), desc="UMAP frames"):
+            projection = reducer.transform(embeddings_list[i])
+            projections.append(projection)
 
     return Animation(projections=projections, title=title, run=run)
 
@@ -803,4 +1057,44 @@ def compute_prediction_similarities(runs, similarity="cosine"):
         similarities.append(sim)
 
     return similarities  # List of (n_runs, n_runs)
+
+
+def compute_cka(X, Y):
+    """
+    Compute the linear Centered Kernel Alignment (CKA) similarity between two embedding matrices X and Y.
+
+    Parameters:
+        X, Y: numpy arrays of shape (N, D)
+              Rows are samples (e.g., data points), columns are features (e.g., neurons).
+              Both matrices must have the same number of samples (rows).
+
+    Returns:
+        cka_score: Scalar in [0, 1] measuring similarity between the representations.
+                   A value close to 1 indicates strong structural alignment.
+    """
+    from sklearn.metrics.pairwise import linear_kernel
+
+    def center_kernel(K):
+        """Double-center the Gram matrix K using the centering matrix H = I - 1/n."""
+        n = K.shape[0]
+        H = np.eye(n) - np.ones((n, n)) / n
+        return H @ K @ H
+
+    # Compute linear Gram (kernel) matrices
+    Kx = linear_kernel(X)  # Kx[i,j] = <x_i, x_j>
+    Ky = linear_kernel(Y)  # Ky[i,j] = <y_i, y_j>
+
+    # Center the kernel matrices
+    Kx_centered = center_kernel(Kx)
+    Ky_centered = center_kernel(Ky)
+
+    # Compute the Hilbert-Schmidt Independence Criterion (HSIC)
+    hsic = np.sum(Kx_centered * Ky_centered)
+
+    # Normalize to obtain CKA
+    norm_Kx = np.linalg.norm(Kx_centered, 'fro')
+    norm_Ky = np.linalg.norm(Ky_centered, 'fro')
+    cka_score = hsic / (norm_Kx * norm_Ky + 1e-8)
+
+    return cka_score
 

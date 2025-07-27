@@ -129,7 +129,7 @@ def plot_pca(ax, embedding_snapshots, embedding_snapshot_labels, embedding_recor
                        c=[color], marker=marker, label=str(i),
                        alpha=0.7, edgecolors='none', s=size)
 
-def plot_embedding_drift(ax, embedding_drifts, title="Embedding Drift", max_multiply=1.1):
+def plot_embedding_drift(ax, embedding_drifts, title="Embedding Drift", max_multiply=1.1, y_lim=None):
     """Plots embedding drift."""
     colors = ['green', 'blue', 'orange', 'red', 'purple']
     labels = ['Drift 1', 'Drift 2', 'Drift 4', 'Drift 8', 'Drift 16']
@@ -141,7 +141,7 @@ def plot_embedding_drift(ax, embedding_drifts, title="Embedding Drift", max_mult
         ax.plot(indices, drift_data, color=color, label=label, alpha=0.7)
         if len(drift_data[skip:]) > 0:
             y_max = max(y_max, max(drift_data[skip:]))
-    ax.set_ylim(0, y_max * max_multiply)
+    ax.set_ylim(0, y_max * max_multiply if y_lim is None else y_lim)
     ax.set_title(title)
     ax.set_ylabel("Drift Distance")
     ax.set_xlabel("Snapshot Index")

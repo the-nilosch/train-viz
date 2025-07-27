@@ -44,7 +44,8 @@ conda activate phate-env
 pip install "numpy<2.0" "pandas>=1.5,<2.0"
 pip install phate m-phate
 pip install notebook jupyterlab ipykernel ipywidgets ipympl
-pip install tqdm h5py umap torchvision
+pip install tqdm h5py torchvision
+conda install seaborn umap-learn
 ```
 
 Register to jupyter kernel
