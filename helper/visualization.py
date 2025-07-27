@@ -21,6 +21,9 @@ class Run:
         self.cka_similarities = None
         self.cka_similarities_denoised = {}
 
+        self.pt_files = None
+        self.flattened_weights = None
+
     def get_cka_similarities(self):
         if self.cka_similarities is None:
             self.cka_similarities = calculate_cka_similarities(self.embeddings)
@@ -244,6 +247,27 @@ class Run:
         plt.tight_layout()
         plt.show()
 
+    def get_pt_files(self, model_folder="trainings/{}", load_only=False):
+        if self.pt_files is not None:
+            return self.pt_files
+
+        model_folder = model_folder.format(self.results["ll_flattened_weights_dir"])
+        self.pt_files = get_files(model_folder, prefix="model-")
+        print(f"Found {len(self.pt_files)} checkpoint files.")
+
+        if load_only:
+            return
+        return self.pt_files
+
+    def get_flattened_weights(self):
+        if self.flattened_weights is not None:
+            return self.flattened_weights
+
+        self.flattened_weights = load_flattened_weights(self.get_pt_files())
+        return self.flattened_weights
+
+
+
 class Animation:
     def __init__(self, projections: list, title: str, run: Run):
         self.projections = projections
@@ -310,7 +334,7 @@ class Animation:
 
         print(filename)
 
-    def evaluate(self, verbose=True, figsize=(10, 3), y_lim=None, metric="euclidean"):
+    def evaluate(self, verbose=True, figsize=(10, 3), y_lim=None, metric="euclidean", is_trajectory=False):
         return visualization_drift_vs_embedding_drift(
             self.projections,
             self.embedding_drifts if metric == 'euclidean' else calculate_embedding_drift(self.run.embeddings, metric=metric),
@@ -318,6 +342,7 @@ class Animation:
             verbose=verbose,
             figsize=figsize,
             y_lim=y_lim,
+            axis=0 if is_trajectory else 1
         )
 
     def denoise(self, blend=0.9, window_size=15, mode='window', do_projections=True, do_embedding_drift=True,
@@ -364,10 +389,8 @@ class Animation:
 
 
 
-
-
 def visualization_drift_vs_embedding_drift(projections, embedding_drifts, cka_similarities, verbose=True, embeddings=False,
-                                           figsize=(10, 3), on_ax=None, y_lim=None):
+                                           figsize=(10, 3), on_ax=None, y_lim=None, axis=1):
     """
     Computes the composite similarity score between visualization and embedding drift
     across all skip levels, and optionally visualizes the results.
@@ -380,7 +403,7 @@ def visualization_drift_vs_embedding_drift(projections, embedding_drifts, cka_si
     if type(projections) is not list and projections.ndim == 2:  # (epochs, 2)
         projections = [p[None, :] for p in projections]
 
-    visualization_drifts = calculate_embedding_drift(projections)
+    visualization_drifts = calculate_embedding_drift(projections, axis=axis)
 
     assert len(visualization_drifts) == len(embedding_drifts) and len(cka_similarities) == len(visualization_drifts), \
         (f"Mismatch in drift lengths. "
@@ -415,7 +438,7 @@ def visualization_drift_vs_embedding_drift(projections, embedding_drifts, cka_si
     return mean_drift_sim, mean_cka_sim
 
 
-def calculate_embedding_drift(embedding_snapshots, max_power=5, metric='euclidean'):
+def calculate_embedding_drift(embedding_snapshots, max_power=5, metric='euclidean', axis=1):
     """
     Calculate embedding drift based on the snapshots.
     Drift is calculated as the mean distance (Euclidean or Manhattan) between snapshots.
@@ -438,9 +461,9 @@ def calculate_embedding_drift(embedding_snapshots, max_power=5, metric='euclidea
             if i - skip >= 0:
                 previous_snapshot = embedding_snapshots[i - skip]
                 if metric == 'euclidean':
-                    drift = np.linalg.norm(current_snapshot - previous_snapshot, axis=1).mean()
+                    drift = np.linalg.norm(current_snapshot - previous_snapshot, axis=axis).mean()
                 elif metric == 'manhattan':
-                    drift = np.abs(current_snapshot - previous_snapshot).sum(axis=1).mean()
+                    drift = np.abs(current_snapshot - previous_snapshot).sum(axis=axis).mean()
                 drifts[skip].append(drift)
             else:
                 drifts[skip].append(np.nan)
@@ -1098,3 +1121,134 @@ def compute_cka(X, Y):
 
     return cka_score
 
+from helper.visualization import Animation
+
+def mphate_on_model_weights(runs: list[Run], titles=None):
+    """
+    Apply M-PHATE to flattened model weights from multiple runs.
+
+    Args:
+        runs: List of runs
+        titles: optional list of labels per run
+
+    Returns:
+        animations: list of Animation objects, one per run
+    """
+    import m_phate
+
+    all_run_flattened = np.stack([run.get_flattened_weights() for run in runs])  # shape: (n_runs, n_epochs, features)
+    print(f'shape: (n_runs, n_epochs, features): {all_run_flattened.shape}')
+
+    combined_weights = np.transpose(all_run_flattened, (1, 0, 2))  # shape: (epochs, runs, features)
+    print(f'shape: (epochs, runs, features): {combined_weights.shape}')
+
+    mphate_op = m_phate.M_PHATE(knn_dist="cosine", mds_dist="cosine")
+    mphate_emb = mphate_op.fit_transform(combined_weights)  # shape: (epochs * runs, 2)
+
+    n_epochs, n_runs = combined_weights.shape[:2]
+    mphate_emb = mphate_emb.reshape(n_epochs, n_runs, 2)
+    mphate_trajectories = np.transpose(mphate_emb, (1, 0, 2))  # (runs, epochs, 2)
+
+    animations = []
+    for idx, run in enumerate(runs):
+        title = titles[idx] if titles else f"Run {idx}"
+        anim = Animation(
+            projections=mphate_trajectories[idx],
+            title=title,
+            run=run
+        )
+        animations.append(anim)
+
+    return animations
+
+
+def get_files(file_path, num_models=None, prefix="", from_last=False, every_nth=1):
+    """
+        Copied from NeuroVisualizer.aux.utils
+    """
+    import re
+    import os
+
+    def extract_number(s, prefix=prefix):
+        pattern = re.compile(r'{}(\d+).pt'.format(prefix))
+        match = pattern.search(s)
+        if match:
+            return int(match.group(1))
+        else:
+            return float('inf')
+
+    def get_all_files(d):
+        f_ = []
+        for dirpath, dirnames, filenames in os.walk(d):
+            f_temp = []
+            for filename in filenames:
+                f_temp.append(os.path.join(dirpath, filename))
+
+            f_temp = [file for file in f_temp if os.path.splitext(file)[-1] == ".pt"]
+            f_temp = sorted(f_temp, key=extract_number)
+
+            len_f_temp_original = len(f_temp)
+            print(dirpath, 'has', len_f_temp_original, 'files')
+
+            if every_nth > 1 and len_f_temp_original > 0:
+                f_temp_last = f_temp[-1]
+                f_temp = f_temp[::every_nth]
+
+                if len_f_temp_original % every_nth != 1:
+                    f_temp = f_temp + [f_temp_last]
+
+            f_ = f_ + f_temp
+        return f_
+
+    directory = os.path.join(file_path)
+    files = get_all_files(directory)
+    pt_files = [file for file in files if file.endswith(".pt")]
+    if num_models is not None:
+        pt_files = pt_files[:num_models] if not from_last else pt_files[-num_models:]
+
+    return pt_files
+
+
+def load_flattened_weights(pt_file_paths, device="cpu"):
+    """
+    Load already-flattened model weights (using weights_only=True) from .pt files.
+    """
+    import torch
+    flattened = []
+    for path in tqdm(pt_file_paths, desc="Loading model checkpoints"):
+        try:
+            tensor = torch.load(path, map_location=device, weights_only=True)
+        except TypeError:
+            raise ValueError(f"torch.load(..., weights_only=True) is not supported for {path}.")
+
+        if not isinstance(tensor, torch.Tensor):
+            raise ValueError(f"Expected a flattened tensor in {path}, got {type(tensor)}")
+
+        flattened.append(tensor.detach().cpu().numpy())
+
+    return np.stack(flattened)  # shape: (n_checkpoints, total_weights)
+
+def linear_mode_connectivity_path(run1, run2, num_points=50):
+    """
+    Compute a straight‐line (LMC) path in weight‐space between two trained models.
+
+    Args:
+        run1, run2: Run objects, each must implement
+            get_flattened_weights() -> np.ndarray of shape (n_epochs, n_features)
+        num_points: number of interpolation points (including the endpoints)
+
+    Returns:
+        path: list of np.ndarray, each of shape (n_features,)
+              path[0] == final weights of run1,
+              path[-1] == final weights of run2
+    """
+    # grab the final epoch's flattened weights from each run
+    w1 = run1.get_flattened_weights()[-1]  # shape: (features,)
+    w2 = run2.get_flattened_weights()[-1]  # shape: (features,)
+
+    # alphas from 0 to 1
+    alphas = np.linspace(0.0, 1.0, num_points)
+
+    # build the path: (1−α_i)*w1 + α_i*w2
+    path = [(1 - a) * w1 + a * w2 for a in alphas]
+    return path

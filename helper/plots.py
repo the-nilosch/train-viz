@@ -1030,49 +1030,70 @@ def plot_phate_animations(
     legend_dist=0.5,
     title="Embedding trajectories across runs (raw dots + smoothed lines)",
     start_epoch=0,
-    end_epoch=None
+    end_epoch=None,
+    loss_coloring=False
 ):
     """
     Plot embedding trajectories using raw points (dots) and smoothed lines for clarity,
-    with optional slicing by start/end epoch and smoothing control.
+    with optional slicing by start/end epoch, smoothing control, and optional coloring
+    by validation loss instead of epoch.
     """
-    cmap = plt.cm.viridis
-    max_epochs = max(len(anim.projections) for anim in animations)
+    cmap = plt.cm.viridis_r if loss_coloring else plt.cm.viridis
+    # how many epochs total across runs?
+    max_epochs = max(len(ani.projections) for ani in animations)
 
     if end_epoch is None:
         end_epoch = max_epochs
 
-    norm = plt.Normalize(vmin=start_epoch, vmax=end_epoch - 1)
+    # Pre‐collect the per‐run validation losses
+    all_slices = [
+        np.asarray(anim.run.results["val_losses"])[start_epoch:end_epoch]
+        for anim in animations
+    ]
+
+    # Choose normalization based on epoch or loss
+    if loss_coloring:
+        # flatten across all runs to get global min/max
+        flat = np.concatenate(all_slices)
+        norm = plt.Normalize(vmin=flat.min(), vmax=flat.max())
+        colorbar_label = "Validation loss"
+    else:
+        norm = plt.Normalize(vmin=start_epoch, vmax=end_epoch - 1)
+        colorbar_label = "Epoch"
 
     plt.figure(figsize=figsize)
     ax = plt.gca()
 
-    for anim in animations:
+    for anim, loss_slice in zip(animations, all_slices):
         raw_traj = np.asarray(anim.projections)
-
-        # Slice raw trajectory
         raw_slice = raw_traj[start_epoch:end_epoch]
 
-        # Compute smoothed trajectory only if enabled
+        # plot smoothed or raw line
         if do_smoothing:
-            smoothed_traj = soft_smooth(raw_traj, window=smooth_window, alpha=smooth_alpha)
-            smoothed_slice = smoothed_traj[start_epoch:end_epoch]
-            ax.plot(smoothed_slice[:, 0], smoothed_slice[:, 1], label=anim.title, alpha=0.7)
+            smoothed = soft_smooth(raw_traj, window=smooth_window, alpha=smooth_alpha)
+            seg = smoothed[start_epoch:end_epoch]
+            ax.plot(seg[:, 0], seg[:, 1], label=anim.title, alpha=0.7)
         else:
             ax.plot(raw_slice[:, 0], raw_slice[:, 1], label=anim.title, alpha=0.7)
 
-        # Plot raw dots
-        for i, point in enumerate(raw_slice):
-            epoch = start_epoch + i
-            ax.scatter(
-                point[0], point[1],
-                color=cmap(norm(epoch)),
-                s=dot_size,
-                alpha=0.9
-            )
+        # dots, with safe indexing into loss_slice
+        L = len(loss_slice)
+        for i, (x, y) in enumerate(raw_slice):
+            if loss_coloring:
+                # shift by one, clip to [0, L-1]
+                idx = min(max(i-1, 0), L-1)
+                cval = loss_slice[idx]
+            else:
+                cval = start_epoch + i
+            ax.scatter(x, y,
+                       color=cmap(norm(cval)),
+                       s=dot_size,
+                       alpha=0.9)
 
+    # add colorbar
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-    plt.colorbar(sm, ax=ax, label="Epoch")
+    sm.set_array([])  # only needed for older matplotlib versions
+    plt.colorbar(sm, ax=ax, label=colorbar_label)
 
     ax.set_title(title)
     ax.set_xlabel("M-PHATE dim 1")

@@ -487,3 +487,48 @@ def plot_loss_landscape(
     #plt.show()
 
     return fig
+
+
+def compute_lmc_loss_path(
+    weight_path: list[np.ndarray],
+    base_model: torch.nn.Module,
+    dataset_name: str,
+    device: str = 'cpu',
+    loss_name: str = 'test_loss',
+    whichloss: str = 'crossentropy',
+):
+    """
+    Given a straight‐line (LMC) path of flattened weight vectors, repopulate
+    the model at each step and compute its loss.
+
+    Args:
+        weight_path: list of 1D numpy arrays (or torch tensors) of length = total_params
+        base_model: uninitialized model architecture to clone for each step
+        dataset_name: e.g. 'mnist', 'cifar10', 'cifar100'
+        device: 'cpu' or 'cuda'
+        loss_name: 'train_loss' or 'test_loss'
+        whichloss: as expected by Loss.get_loss (e.g. 'crossentropy')
+
+    Returns:
+        losses: list of floats, same length as weight_path
+    """
+    # set up Loss evaluator
+    loss_obj = Loss(dataset_name, device)
+
+    losses = []
+    for flat in tqdm(weight_path, desc="Compute Losses"):
+        # ensure a torch tensor on CPU
+        w = torch.as_tensor(flat, dtype=torch.float32, device=device)
+        # make a fresh model copy and load weights
+        model_i = deepcopy(base_model).to(device)
+        repopulate_model_fixed(w, model_i)
+        model_i.eval()
+
+        # compute loss on the chosen split
+        with torch.no_grad():
+            loss_t = loss_obj.get_loss(model_i, loss_name, whichloss)
+        losses.append(loss_t.item())
+
+        
+
+    return losses
