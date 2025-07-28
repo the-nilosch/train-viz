@@ -4,7 +4,8 @@ import torch.nn as nn
 class PatchEmbedding(nn.Module):
     def __init__(self, img_size=32, patch_size=4, emb_dim=128, in_channels=3):
         super().__init__()
-        self.patch_size = patch_size
+        assert img_size % patch_size == 0
+
         self.num_patches = (img_size // patch_size) ** 2
         self.projection = nn.Conv2d(in_channels, emb_dim, kernel_size=patch_size, stride=patch_size)
         self.cls_token = nn.Parameter(torch.randn(1, 1, emb_dim))
@@ -44,6 +45,11 @@ class ViT(nn.Module):
         self.patch_embed = PatchEmbedding(img_size, patch_size, emb_dim, in_channels=input_channels)
         self.transformer_encoder = TransformerEncoder(emb_dim, num_heads, depth, mlp_dim, dropout)
         self.head = nn.Linear(emb_dim, num_classes)
+        self.norm = nn.LayerNorm(emb_dim)
+
+        # Initialization
+        nn.init.trunc_normal_(self.head.weight, std=0.02)
+        nn.init.zeros_(self.head.bias)
 
         # store config
         self.cfg = dict(
@@ -59,13 +65,11 @@ class ViT(nn.Module):
         )
 
     def forward(self, x, return_embedding=False):
-        x = self.patch_embed(x)
-        x = self.transformer_encoder(x)
-        cls_token_embedding = x[:, 0]
-        out = self.head(cls_token_embedding)
-        if return_embedding:
-            return out, cls_token_embedding
-        return out
+        x = self.patch_embed(x)  # [B, num_patches + 1, emb_dim]
+        x = self.transformer_encoder(x)  # [B, num_patches + 1, emb_dim]
+        cls_token = self.norm(x[:, 0])  # [B, emb_dim]
+        out = self.head(cls_token)  # [B, num_classes]
+        return (out, cls_token) if return_embedding else out
 
     def __repr__(self):
         # build a concise string from the config

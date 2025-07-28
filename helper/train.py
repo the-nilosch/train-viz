@@ -133,11 +133,11 @@ def train_model_with_embedding_tracking(
                 embedding_indices.append(embedding_counter)
                 embedding_counter += 1
 
-                # Metrics (same for both)
-                _, preds = torch.max(output, dim=1)
-                correct_train += (preds == target).sum().item()
-                total_train += target.size(0)
-                epoch_train_loss += loss.item()
+            # Metrics (same for both)
+            _, preds = torch.max(output, dim=1)
+            correct_train += (preds == target).sum().item()
+            total_train += target.size(0)
+            epoch_train_loss += loss.item()
 
         # === Epoch-wise accuracy ===
         train_loss = epoch_train_loss / len(train_loader)
