@@ -555,7 +555,7 @@ def compute_drift_similarity_score(embedding_drifts,
     return mean_similarity, similarity_scores
 
 
-def show_projections_and_drift(projections_list, titles, labels, embedding_drifts, embeddings=False, interpolate=False,
+def show_projections_and_drift(projections_list, titles, labels, embedding_drifts, cka_similarities, embeddings=False, interpolate=False,
                                steps_per_transition=5, figsize_embedding_drift=(6, 4), figsize_visualization=(4, 4),
                                shared_axes=False, dot_size=5, alpha=0.6, dataset=None):
     """
@@ -588,20 +588,26 @@ def show_projections_and_drift(projections_list, titles, labels, embedding_drift
     )
 
     # Calculate Visualization Drifts
-    correlations_list = []
+    drift_correlations = []
+    cka_correlations = []
     for i, projection in enumerate(projections_list):
-        correlations_list.append(
-            visualization_drift_vs_embedding_drift(projection,
-                                                   embedding_drifts,
-                                                   verbose=False,
-                                                   embeddings=embeddings,
-                                                   figsize=figsize_embedding_drift,
-                                                   on_ax=axes_right[i]))
+        drift, cka = visualization_drift_vs_embedding_drift(projection,
+                                                           embedding_drifts,
+                                                           cka_similarities,
+                                                           verbose=False,
+                                                           embeddings=embeddings,
+                                                           figsize=figsize_embedding_drift,
+                                                           on_ax=axes_right[i])
+        drift_correlations.append(drift)
+        cka_correlations.append(cka)
 
     plt.show()
-    correlation_means = [np.mean(corrs) for corrs in correlations_list]
+    drift_mean = [np.mean(corrs) for corrs in drift_correlations]
+    cka_mean = [np.mean(corrs) for corrs in cka_correlations]
     for i in range(nrows):
-        print(f"{titles[i]}: {correlation_means[i]} = {correlations_list[i]}")
+        print(f"{titles[i]}:\n"
+              f"Drift: {drift_mean[i]} = {drift_correlations[i]}"
+              f"CKA: {cka_mean[i]} = {cka_correlations[i]}")
 
 
 def generate_pca_animation(
@@ -823,7 +829,8 @@ def show_animations(
         shared_axes=True,
         with_drift=False,
         add_confusion_matrix=False,
-        annotate_confusion_matrix=False
+        annotate_confusion_matrix=False,
+        cols=None,
 ):
     projections_list = [ani.projections for ani in animations]
     titles = custom_titles if custom_titles else [ani.title for ani in animations]
@@ -841,16 +848,19 @@ def show_animations(
             shared_axes=shared_axes,
             dataset=animations[0].run.dataset,
             confusion_matrices=animations[0].run.results['val_confusion_matrices'] if add_confusion_matrix else None,
-            annotate_conf=annotate_confusion_matrix
+            annotate_conf=annotate_confusion_matrix,
+            cols=cols
         )
         return
 
     embedding_drifts = [ani.embedding_drifts for ani in animations]
+    cka_similarities = [ani.get_cka_similarities() for ani in animations]
     show_projections_and_drift(
         projections_list = projections_list,
         titles = titles,
         labels=animations[0].labels,
         embedding_drifts= embedding_drifts,
+        cka_similarities=cka_similarities,
         embeddings = False,
         interpolate=interpolate,
         steps_per_transition=steps_per_transition,

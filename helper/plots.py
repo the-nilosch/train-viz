@@ -328,6 +328,7 @@ def show_multiple_projections_with_slider(
         confusion_matrices=None,
         cmap_conf='Blues',
         annotate_conf=False,
+        cols=None,
 ):
     from helper.vision_classification import get_text_labels
     class_names = range(0, 100) if dataset is None else get_text_labels(dataset)
@@ -365,7 +366,7 @@ def show_multiple_projections_with_slider(
         total_panels = len(projections_list)
 
     # layout grid
-    ncols = min(total_panels, 3)
+    ncols = min(total_panels, 3) if cols is None else cols
     nrows = math.ceil(total_panels / ncols)
 
     # create fig/axes if needed
