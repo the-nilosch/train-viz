@@ -1022,17 +1022,18 @@ def show_phate_graphs(
 
 
 def plot_phate_animations(
-    animations,
-    do_smoothing=True,
-    smooth_window=5,
-    smooth_alpha=0.8,
-    figsize=(8, 6),
-    dot_size=25,
-    legend_dist=0.5,
-    title="Embedding trajectories across runs (raw dots + smoothed lines)",
-    start_epoch=0,
-    end_epoch=None,
-    loss_coloring=False
+        animations,
+        do_smoothing=True,
+        smooth_window=5,
+        smooth_alpha=0.8,
+        figsize=(8, 6),
+        dot_size=25,
+        legend_dist=0.5,
+        title="Embedding trajectories across runs (raw dots + smoothed lines)",
+        start_epoch=0,
+        end_epoch=None,
+        loss_coloring=False,
+        trajectory_cmap="tab20"
 ):
     """
     Plot embedding trajectories using raw points (dots) and smoothed lines for clarity,
@@ -1040,6 +1041,9 @@ def plot_phate_animations(
     by validation loss instead of epoch.
     """
     cmap = plt.cm.viridis_r if loss_coloring else plt.cm.viridis
+    cmap_traj = plt.get_cmap(trajectory_cmap, len(animations))
+    colors = cmap_traj(np.arange(len(animations)))  # shape (n_runs, 4)
+
     # how many epochs total across runs?
     max_epochs = max(len(ani.projections) for ani in animations)
 
@@ -1065,24 +1069,25 @@ def plot_phate_animations(
     plt.figure(figsize=figsize)
     ax = plt.gca()
 
-    for anim, loss_slice in zip(animations, all_slices):
+    for idx, (anim, loss_slice) in enumerate(zip(animations, all_slices)):
         raw_traj = np.asarray(anim.projections)
         raw_slice = raw_traj[start_epoch:end_epoch]
+        col = colors[idx]
 
         # plot smoothed or raw line
         if do_smoothing:
             smoothed = soft_smooth(raw_traj, window=smooth_window, alpha=smooth_alpha)
             seg = smoothed[start_epoch:end_epoch]
-            ax.plot(seg[:, 0], seg[:, 1], label=anim.title, alpha=0.7)
+            ax.plot(seg[:, 0], seg[:, 1], label=anim.title, alpha=0.7, color=col)
         else:
-            ax.plot(raw_slice[:, 0], raw_slice[:, 1], label=anim.title, alpha=0.7)
+            ax.plot(raw_slice[:, 0], raw_slice[:, 1], label=anim.title, alpha=0.7, color=col)
 
         # dots, with safe indexing into loss_slice
         L = len(loss_slice)
         for i, (x, y) in enumerate(raw_slice):
             if loss_coloring:
                 # shift by one, clip to [0, L-1]
-                idx = min(max(i-1, 0), L-1)
+                idx = min(max(i - 1, 0), L - 1)
                 cval = loss_slice[idx]
             else:
                 cval = start_epoch + i
@@ -1136,7 +1141,7 @@ def soft_smooth(traj, window=5, alpha=0.9):
 
 
 
-def plot_prediction_similarity_heatmap(similarities, run_titles=None, cmap="viridis", figsize=(8, 6)):
+def plot_prediction_similarity_heatmap(similarities, run_titles=None, cmap="viridis", figsize=(8, 6), title="Prediction Similarity at Epoch {}"):
     """
     Plot an interactive heatmap slider with a consistent color scale across epochs.
 
@@ -1174,7 +1179,7 @@ def plot_prediction_similarity_heatmap(similarities, run_titles=None, cmap="viri
             vmin=vmin,
             vmax=vmax
         )
-        plt.title(f"Prediction Similarity at Epoch {epoch}")
+        plt.title(title.format(epoch))
         plt.xlabel("Run")
         plt.ylabel("Run")
         plt.tight_layout()
