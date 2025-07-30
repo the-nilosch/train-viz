@@ -53,6 +53,8 @@ class Run:
             plots.plot_scheduled_lr(axs[1][0], self.results["scheduler_history"])
         plots.plot_embedding_drift(axs[1][1], self.results["embedding_drifts"])
 
+        return fig
+
     def plot_embedding_drifts(self, doubled_lines = True, y_lim=None, metric='euclidean'):
         if metric == 'euclidean':
             embedding_drifts = self.embedding_drifts.copy()
@@ -77,7 +79,7 @@ class Run:
         plots.plot_embedding_drift(axs, embedding_drifts, max_multiply=1.5, y_lim=y_lim)
 
         plt.legend()
-        plt.show()
+        return fig
 
     def plot_embedding_drifts_manhattan(self, doubled_lines = True, y_lim=None):
         embedding_drifts = self.embedding_drifts.copy()
@@ -103,7 +105,7 @@ class Run:
                                    title="Embedding Drift Manhattan vs Euclidean Distance")
 
         plt.legend()
-        plt.show()
+        return fig
 
     def plot_cka_similarities(self, doubled_lines = True, flip=True, y_lim=None):
         cka_similarities = self.get_cka_similarities()
@@ -132,7 +134,7 @@ class Run:
                                    y_lim=y_lim)
 
         plt.legend()
-        plt.show()
+        return fig
 
     def plot_curvature_distribution(self):
         """
@@ -162,7 +164,7 @@ class Run:
         mean_curv = curvature_matrix.mean(axis=1)
         std_curv = curvature_matrix.std(axis=1)
 
-        plt.figure(figsize=(8, 5))
+        fig = plt.figure(figsize=(8, 5))
         plt.plot(range(1, T - 1), mean_curv, label="Mean Curvature")
         plt.fill_between(range(1, T - 1), mean_curv - std_curv, mean_curv + std_curv,
                          alpha=0.3, label="±1 Std Dev")
@@ -172,7 +174,7 @@ class Run:
         plt.legend()
         plt.grid(True)
         plt.tight_layout()
-        plt.show()
+        return fig
 
     def print_info(self):
         print(f"Sequene of {len(self.embeddings)} snapshots")
@@ -236,7 +238,7 @@ class Run:
         eigenvalues_over_time = np.array(eigenvalues_over_time)  # shape (T, num_components)
 
         # Plot
-        plt.figure(figsize=figsize)
+        fig = plt.figure(figsize=figsize)
         for i in range(num_components):
             plt.plot(eigenvalues_over_time[:, i], label=f'PC {i + 1}')
         plt.xlabel("Epoch")
@@ -245,7 +247,78 @@ class Run:
         plt.legend()
         plt.grid(True)
         plt.tight_layout()
-        plt.show()
+        return fig
+
+    def plot_embedding_drift_single(self):
+        """
+        Plots mean ± std of embedding drift (Euclidean) with skip=1 over time.
+        """
+        embeddings = np.array(self.embeddings)  # shape: (T, N, D)
+        T = embeddings.shape[0]
+
+        drift_vals = []
+
+        for t in range(1, T):
+            delta = embeddings[t] - embeddings[t - 1]
+            drift = np.linalg.norm(delta, axis=1)  # shape: (N,)
+            drift_vals.append(drift)
+
+        drift_vals = np.array(drift_vals)  # shape: (T-1, N)
+        mean_drift = drift_vals.mean(axis=1)
+        std_drift = drift_vals.std(axis=1)
+
+        fig = plt.figure(figsize=(8, 5))
+        plt.plot(range(1, T), mean_drift, label="Mean Drift", color="tab:blue")
+        plt.fill_between(range(1, T), mean_drift - std_drift, mean_drift + std_drift,
+                         alpha=0.3, label="±1 Std Dev", color="tab:blue")
+        plt.xlabel("Epoch")
+        plt.ylabel("Drift Distance")
+        plt.title("Mean ± Std of Embedding Drift (Skip=1)")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        return fig
+
+    def plot_embedding_drift_multi(self):
+        """
+        Plots mean ± std of embedding drift (Euclidean) for multiple skip values in one figure.
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        embeddings = np.array(self.embeddings)  # shape: (T, N, D)
+        T = embeddings.shape[0]
+        skips = [1, 2, 4, 8, 16]
+
+        fig = plt.figure(figsize=(10, 6))
+        colors = plt.get_cmap("tab10").colors
+
+        for idx, skip in enumerate(skips):
+            if T <= skip:
+                continue  # skip too large for sequence length
+            drift_vals = []
+
+            for t in range(skip, T):
+                delta = embeddings[t] - embeddings[t - skip]
+                drift = np.linalg.norm(delta, axis=1)  # shape: (N,)
+                drift_vals.append(drift)
+
+            drift_vals = np.array(drift_vals)  # shape: (T - skip, N)
+            mean_drift = drift_vals.mean(axis=1)
+            std_drift = drift_vals.std(axis=1)
+            x = range(skip, T)
+
+            plt.plot(x, mean_drift, label=f"Skip {skip}", color=colors[idx % len(colors)])
+            plt.fill_between(x, mean_drift - std_drift, mean_drift + std_drift,
+                             alpha=0.3, color=colors[idx % len(colors)])
+
+        plt.xlabel("Epoch")
+        plt.ylabel("Drift Distance")
+        plt.title("Embedding Drift: Mean ± Std for Multiple Skips")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        return fig
 
     def get_pt_files(self, model_folder="trainings/{}", load_only=False):
         if self.pt_files is not None:
@@ -327,7 +400,7 @@ class Animation:
         )
 
         print("Saving file...")
-        filename = f"plots/animations/{self.run_id}_{self.title}.gif"
+        filename = f"plots/{self.run_id}/{self.title}.gif"
 
         ani.save(filename, writer='pillow', dpi=150)
         plt.close(ani._fig)
@@ -343,6 +416,16 @@ class Animation:
             figsize=figsize,
             y_lim=y_lim,
             axis=0 if is_trajectory else 1
+        )
+
+    def log_evaluation(self, is_trajectory=False):
+        return visualization_drift_vs_embedding_drift(
+            self.projections,
+            self.embedding_drifts,
+            self.get_cka_similarities(),
+            verbose=False,
+            axis=0 if is_trajectory else 1,
+            logging=True
         )
 
     def denoise(self, blend=0.9, window_size=15, mode='window', do_projections=True, do_embedding_drift=True,
@@ -390,7 +473,7 @@ class Animation:
 
 
 def visualization_drift_vs_embedding_drift(projections, embedding_drifts, cka_similarities, verbose=True, embeddings=False,
-                                           figsize=(10, 3), on_ax=None, y_lim=None, axis=1):
+                                           figsize=(10, 3), on_ax=None, y_lim=None, axis=1, logging=False):
     """
     Computes the composite similarity score between visualization and embedding drift
     across all skip levels, and optionally visualizes the results.
@@ -416,12 +499,15 @@ def visualization_drift_vs_embedding_drift(projections, embedding_drifts, cka_si
     }
 
     # Compute similarity
-    mean_drift_sim, drift_sim_scores = compute_drift_similarity_score(
+    mean_drift_sim, drift_sim_scores, log_drift = compute_drift_similarity_score(
         embedding_drifts, visualization_drifts, verbose=verbose, similarity_name="Total Mean Sim. to EMBEDDING DRIFT"
     )
-    mean_cka_sim, cka_sim_scores = compute_drift_similarity_score(
+    mean_cka_sim, cka_sim_scores, log_cka = compute_drift_similarity_score(
         cka_similarities, visualization_drifts, verbose=verbose, similarity_name="Total Mean Sim. to CKA SIMILARITY"
     )
+
+    if logging:
+        return log_drift + log_cka
 
     if on_ax is not None:
         plots.plot_embedding_drift(cka_sim_scores, visualization_drifts, title="Visualization Drift")
@@ -515,6 +601,7 @@ def compute_drift_similarity_score(embedding_drifts,
         dict: similarity per skip
     """
     similarity_scores = {}
+    log = ""
 
     for k in embedding_drifts.keys():
         emb = np.asarray(embedding_drifts[k])
@@ -546,13 +633,14 @@ def compute_drift_similarity_score(embedding_drifts,
         similarity = log_corr * ratio_penalty
         similarity_scores[k] = similarity
 
-        if verbose:
-            print(f"Skip {k} — log-corr: {log_corr:.3f}, ratio pen: {ratio_penalty:.3f}, total: {similarity:.3f}")
+        log += f"Skip {k} — log-corr: {log_corr:.3f}, ratio pen: {ratio_penalty:.3f}, total: {similarity:.3f}\n"
 
     mean_similarity = np.nanmean(list(similarity_scores.values()))
+
+    log += f"{similarity_name}: {mean_similarity:.4f}\n"
     if verbose:
-        print(f"{similarity_name}: {mean_similarity:.4f}")
-    return mean_similarity, similarity_scores
+        print(log)
+    return mean_similarity, similarity_scores, log
 
 
 def show_projections_and_drift(projections_list, titles, labels, embedding_drifts, cka_similarities, embeddings=False, interpolate=False,
@@ -625,7 +713,7 @@ def generate_pca_animation(
     max_frames = max_frames or len(embeddings_list)
 
     if fit_basis == 'window':
-        title = f'PCA window ({window_size})'
+        title = f'PCA window ({window_size}){" 3D" if out_dim == 3 else ""}'
         from scipy.linalg import orthogonal_procrustes
 
         prev_components = None
@@ -670,7 +758,8 @@ def generate_pca_animation(
         else:
             raise ValueError(f"Invalid pca_fit_basis: {fit_basis}")
 
-        title = f'PCA on {fit_basis}'
+        title = f'PCA on {fit_basis} {" 3D" if out_dim == 3 else ""}'
+
         reducer = PCA(n_components=out_dim)
         reducer.fit(basis_data)
         for i in tqdm(range(max_frames), desc="PCA frames"):
@@ -701,7 +790,7 @@ def generate_tsne_animation(
             f'{metric}, '
             f'{"reverse computation, " if reverse_computation else ""}'
             f'{"" if tsne_update == 1 else f"blending={tsne_update},"}'
-             f')')
+             f'{" 3D" if out_dim == 3 else ""})')
     print("Initializing t-SNE...")
     tsne = TSNE(n_components=out_dim, init=tsne_init, perplexity=tsne_perplexity, random_state=random_state,
                 metric=metric)
@@ -732,12 +821,12 @@ def generate_tsne_animation(
 
 def generate_umap_animation(
         run: Run,
-        fit_basis='all',
+        fit_basis='all_n',
         max_frames=None,
         reverse_computation=False,
         random_state=None,
-        umap_n_neighbors=15,
-        umap_min_dist=0.1,
+        n_neighbors=15,
+        min_dist=0.1,
         metric='euclidean',  # for umap and tsne
         out_dim=2,  # 2D vs 3D
         fit_basis_n=5,
@@ -760,12 +849,12 @@ def generate_umap_animation(
     else:
         raise ValueError(f"Invalid pca_fit_basis: {fit_basis}")
 
-    title = (f'UMAP (n={umap_n_neighbors}, dist={umap_min_dist}, {metric}, '
+    title = (f'UMAP (n={n_neighbors}, dist={min_dist}, {metric}, '
             f'{"reverse computation, " if reverse_computation else ""}'
-             f')')
+             f'{" 3D" if out_dim == 3 else ""})')
     reducer = umap.UMAP(n_components=out_dim,
-                        n_neighbors=umap_n_neighbors,
-                        min_dist=umap_min_dist,
+                        n_neighbors=n_neighbors,
+                        min_dist=min_dist,
                         metric=metric,
                         random_state=random_state)
     if reverse_computation:
