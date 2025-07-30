@@ -31,18 +31,30 @@ class FlatTensorDataset(torch.utils.data.Dataset):
             x = self.transform(x)
         return x
 
-def calculate_mean_std_flat(file_paths):
-    tensors = [torch.load(fp, map_location='cpu', weights_only=True) for fp in tqdm(file_paths)]
-    stacked = torch.stack(tensors)
+def calculate_mean_std_flat(pt_files):
+    all_tensors = []
+    for file in pt_files:
+        tensor = torch.load(file, map_location='cpu', weights_only=True)
+        all_tensors.append(tensor)
+    stacked = torch.stack(all_tensors)
     mean = stacked.mean(dim=0)
     std = stacked.std(dim=0)
     return mean, std
 
 def get_dataloader_flat(
-    pt_files, batch_size,
+    pt_files_per_run: list[list[str]],
+    batch_size,
     shuffle=False, num_workers=2,
-    oversample_later=False, power: float = 1.0
+    oversample_later=False, power: float = 1.0,
+    include_lmc=False,
+    num_lmc_points=10
 ):
+    if include_lmc:
+        pt_files_per_run = add_lmc_paths(pt_files_per_run, num_lmc_points)
+
+    print(len(pt_files_per_run))
+    pt_files = [fp for run in pt_files_per_run for fp in run]
+
     # compute global mean/std as before
     mean, std = calculate_mean_std_flat(pt_files)
     normalizer = NormalizeModelParameters(mean, std)
@@ -60,6 +72,45 @@ def get_dataloader_flat(
         return DataLoader(dataset, batch_size=batch_size,
                           shuffle=shuffle, num_workers=num_workers), normalizer
 
+def add_lmc_paths(pt_files_per_run, num_points=10, lmc_dir="trainings/temp/"):
+    os.makedirs(lmc_dir, exist_ok=True)
+    lmc_runs = []
+
+    # Get trajectory end:
+    trajectory_ends = [torch.load(pt_files[-1], map_location='cpu', weights_only=True) for pt_files in pt_files_per_run]
+
+    for i, _ in enumerate(pt_files_per_run):
+        for j, _ in enumerate(pt_files_per_run):
+            if i == j or i < j:
+                continue
+            path = linear_mode_connectivity_path(
+                trajectory_ends[i],
+                trajectory_ends[j],
+                num_points)
+
+            lmc_run = []
+
+            for j, weights in enumerate(path):
+                fname = os.path.join(lmc_dir, f"lmc_run{i}_{j}.pt")
+                torch.save(weights, fname)
+                lmc_run.append(fname)
+
+            lmc_runs.append(lmc_run)
+
+    return pt_files_per_run + lmc_runs
+
+
+def linear_mode_connectivity_path(w1, w2, num_points=10):
+    """
+    Compute a straight‐line (LMC) path in weight‐space between two trained models.
+    """
+    # alphas from 0 to 1
+    alphas = np.linspace(0.0, 1.0, num_points)
+
+    # build the path: (1−α_i)*w1 + α_i*w2
+    path = [(1 - a) * w1 + a * w2 for a in alphas]
+    return path
+
 ### Training
 
 def train_autoencoder(
@@ -73,7 +124,10 @@ def train_autoencoder(
     log_every=5,
     verbose=False,
     save_delta_pct: float = 0.01,       # <-- relative drop (e.g. 0.01 for 1%)
-    avoid_overheat=False
+    avoid_overheat=False,
+    step_lr_patience: int = 5,
+    step_lr_factor: int = 0.5,
+    last_saved_loss:int = None
 ):
     """
     Generic improved AE training loop with early stopping and scheduler.
@@ -86,7 +140,7 @@ def train_autoencoder(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     #scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
     scheduler = ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5, threshold=1e-3, cooldown=0, min_lr=1e-6)
+        optimizer, mode='min', factor=step_lr_factor, patience=step_lr_patience, threshold=1e-3, cooldown=0, min_lr=1e-6)
     loss_fn = nn.MSELoss()
 
     best_loss = float('inf')
@@ -95,7 +149,6 @@ def train_autoencoder(
     losses_log = []
 
     avg_loss = float('inf')
-    last_saved_loss = None
 
     for epoch in range(1, num_epochs + 1):
         model.train()
@@ -204,7 +257,9 @@ def compute_grid_losses_batched(
     loss_name,
     whichloss,
     device,
-    batch_size=128
+    batch_size=128,
+    recalibrate_bn: bool = True,
+    bn_recal_batches: int = 100
 ):
     """
     Compute losses over a latent grid in batches.
@@ -239,6 +294,17 @@ def compute_grid_losses_batched(
         for flat_weights in rec_batch:
             # repopulate_model_fixed returns a new model instance
             model_i = repopulate_model_fixed(flat_weights.clone().cpu(), model)
+
+            # 2) optional BN recalibration
+            if recalibrate_bn:
+                model.train()
+                with torch.no_grad():
+                    for batch_idx, (x, _) in enumerate(loss_obj.train_loader):
+                        if batch_idx >= bn_recal_batches:
+                            break
+                        model(x.to(device))
+                model.to(device).eval()
+
             model_i = model_i.to(device).eval()
             with torch.no_grad():
                 loss_i = loss_obj.get_loss(model_i, loss_name, whichloss).detach()
@@ -288,14 +354,16 @@ class Loss:
             raise ValueError(f"Loss type not defined: {whichloss}")
 
 def compute_trajectory(
-        trajectory_loader,
-        ae_model,
-        transform,
-        loss_obj,
-        model,
-        loss_name,
-        whichloss,
-        device,
+    trajectory_loader,
+    ae_model,
+    transform,
+    loss_obj,
+    model,
+    loss_name,
+    whichloss,
+    device,
+    recalibrate_bn: bool = True,
+    bn_recal_batches: int = 100
 ):
     """
     Computes:
@@ -303,6 +371,8 @@ def compute_trajectory(
     - trajectory_models (decoded weights)
     - trajectory_losses (loss values)
     """
+    if not recalibrate_bn:
+        print(f"With recalibrate_bn=True, the normalization layers could be recalibrated for better loss values")
     # ---- Decode trajectory ----
     trajectory_models = []
     trajectory_coordinates = []
@@ -325,10 +395,25 @@ def compute_trajectory(
 
     trajectory_losses = []
     for i in tqdm(range(trajectory_models.shape[0]), desc="Computing trajectory losses"):
+        # sanity-check size
         model_flattened = trajectory_models[i, :]
-        assert model_flattened.numel() == sum(p.numel() for p in model.parameters()); "Mismatch in parameter size."
+        total_params = sum(p.numel() for p in model.parameters())
+        assert model_flattened.numel() == total_params, "Mismatch in parameter size."
+
+        # 1) repopulate model weights
         with torch.no_grad():
             model = repopulate_model_fixed(model_flattened.clone(), model)
+
+        # 2) optional BN recalibration
+        if recalibrate_bn:
+            model.train()
+            with torch.no_grad():
+                for batch_idx, (x, _) in enumerate(loss_obj.train_loader):
+                    if batch_idx >= bn_recal_batches:
+                        break
+                    model(x.to(device))
+            model.to(device).eval()
+
         loss = loss_obj.get_loss(model, loss_name, whichloss).detach()
         trajectory_losses.append(loss)
 
