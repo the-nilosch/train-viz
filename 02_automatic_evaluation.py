@@ -191,20 +191,20 @@ def evaluate_umap(run: Run, args):
     warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn.utils.deprecation")
 
     # Cosine vs Euclidean
-    # umap_ani = generate_umap_animation(run, fit_basis='all_n')
-    # umap_cosine = generate_umap_animation(run, fit_basis='all_n', metric='cosine')
-    # umap_ani.save_as_gif()
-    # umap_cosine.save_as_gif()
-    # logger.set_ani(run, umap_ani)
-    # logger.set_ani(run, umap_cosine)
+    umap_ani = generate_umap_animation(run, fit_basis='all_n')
+    umap_cosine = generate_umap_animation(run, fit_basis='all_n', metric='cosine')
+    umap_ani.save_as_gif()
+    umap_cosine.save_as_gif()
+    logger.set_ani(run, umap_ani)
+    logger.set_ani(run, umap_cosine)
 
     # Denoised
-    # umap_ani_denoised = umap_ani.denoise()
-    # umap_cosine_denoised = umap_cosine.denoise()
-    # umap_ani_denoised.save_as_gif()
-    # umap_cosine_denoised.save_as_gif()
-    # logger.set_ani(run, umap_ani_denoised)
-    # logger.set_ani(run, umap_cosine_denoised)
+    umap_ani_denoised = umap_ani.denoise()
+    umap_cosine_denoised = umap_cosine.denoise()
+    umap_ani_denoised.save_as_gif()
+    umap_cosine_denoised.save_as_gif()
+    logger.set_ani(run, umap_ani_denoised)
+    logger.set_ani(run, umap_cosine_denoised)
 
     # Neighbors
     umap_neighbors_5 = generate_umap_animation(run, metric='cosine', n_neighbors=5)
@@ -263,14 +263,18 @@ def evaluate_phate(run: Run, args):
     m_phate_animation.save_as_gif()
     logger.set_ani(run, m_phate_animation)
 
+    denoised = m_phate_animation.denoise()
+    denoised.save_as_gif()
+    logger.set_ani(run, denoised)
+
     logger.save()
 
 if __name__ == "__main__":
     run, args = init_run()
 
-    #general_plots(run, args)
-    #evaluate_pca(run, args)
+    general_plots(run, args)
+    evaluate_pca(run, args)
     evaluate_umap(run, args)
-    #evaluate_phate(run, args)
-    #evaluate_tsne(run, args)
+    evaluate_phate(run, args)
+    evaluate_tsne(run, args)
 

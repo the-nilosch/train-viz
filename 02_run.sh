@@ -2,8 +2,8 @@
 
 # List of dataset/run_id pairs
 declare -a runs=(
-#  "mnist run-0011-CNN_mnist_32_0.9776"
-#  "mnist run-0014-CNN_mnist_32_0.9744"
+  "mnist run-0011-CNN_mnist_32_0.9776"
+  "mnist run-0014-CNN_mnist_32_0.9744"
   "mnist run-0030-ViT_mnist_32_0.9812"
   "cifar10 run-0016-CNN_cifar10_128_0.8093"
   "cifar10 run-0023-CNN_cifar10_128_0.8509"
