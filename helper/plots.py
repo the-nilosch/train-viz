@@ -1184,3 +1184,338 @@ def plot_prediction_similarity_heatmap(similarities, run_titles=None, cmap="viri
         plt.ylabel("Run")
         plt.tight_layout()
         plt.show()
+
+
+from matplotlib.colors import LogNorm, Normalize
+
+def plot_movement_scatter(
+    animation,
+    skip=1,
+    point_size=3,
+    alpha=0.7,
+    color_by_label=True,
+    cmap_small='tab10',
+    cmap_large='tab20',
+    fig_size=(5.5, 5.5),
+    diagonal=True,
+    reg_color='black',
+    reg_alpha=0.7,
+    reg_lw=1.5,
+    combine_all=False,  # NEW FLAG
+):
+    # --- collect tensors ---
+    E_list = animation.run.embeddings
+    P_list = animation.projections
+    L_list = animation.run.labels
+    T = min(len(E_list), len(P_list), len(L_list))
+    if T < skip + 1:
+        raise ValueError(f"Not enough frames ({T}) for skip={skip}")
+
+    # --- precompute movements ---
+    emb_moves, vis_moves, labels_t = [], [], []
+    for t in range(skip, T):
+        emb_moves.append(np.linalg.norm(E_list[t] - E_list[t - skip], axis=1))
+        vis_moves.append(np.linalg.norm(P_list[t] - P_list[t - skip], axis=1))
+        labels_t.append(L_list[t])
+
+    emb_moves = np.stack(emb_moves)  # (T-skip, N)
+    vis_moves = np.stack(vis_moves)
+    labels_t = np.stack(labels_t)
+
+    # consistent axes
+    lim = 1.05 * max(np.nanmax(emb_moves), np.nanmax(vis_moves))
+
+    # colormap
+    if color_by_label:
+        unique = np.unique(labels_t)
+        num_classes = unique.size
+        cmap = cmap_small if num_classes <= 10 else cmap_large
+        label_to_idx = {lbl: i for i, lbl in enumerate(unique)}
+        mapped_labels = np.vectorize(label_to_idx.get)(labels_t)
+    else:
+        cmap = None
+        mapped_labels = None
+
+    # --- combined mode ---
+    if combine_all:
+        X_all = emb_moves.flatten()
+        Y_all = vis_moves.flatten()
+        c_all = mapped_labels.flatten() if color_by_label else 'grey'
+
+        fig, ax = plt.subplots(figsize=fig_size)
+        scat = ax.scatter(X_all, Y_all, s=point_size, alpha=alpha, c=c_all, cmap=cmap)
+
+        # regression for all data
+        slope, intercept = np.polyfit(X_all, Y_all, 1)
+        x_line = np.array([0, lim])
+        ax.plot(x_line, slope * x_line + intercept,
+                color=reg_color, alpha=reg_alpha, lw=reg_lw)
+
+        ax.set_xlim(0, lim)
+        ax.set_ylim(0, lim)
+        ax.set_xlabel("Movement in embedding space (Euclidean)")
+        ax.set_ylabel("Movement in visualization (Euclidean)")
+        ax.set_title(f"All timesteps combined (Δt={skip}) — slope={slope:.3f}")
+        if diagonal:
+            ax.plot([0, lim], [0, lim], ls="--", lw=1, c="gray", alpha=0.6)
+
+        plt.tight_layout()
+        plt.show()
+        return
+
+    # --- animated mode ---
+    fig, ax = plt.subplots(figsize=fig_size)
+    X0 = emb_moves[0]
+    Y0 = vis_moves[0]
+    c0 = mapped_labels[0] if color_by_label else 'grey'
+    scat = ax.scatter(X0, Y0, s=point_size, alpha=alpha, c=c0, cmap=cmap)
+
+    slope0, intercept0 = np.polyfit(X0, Y0, 1)
+    x_line = np.array([0, lim])
+    reg_line, = ax.plot(x_line, slope0 * x_line + intercept0,
+                        color=reg_color, alpha=reg_alpha, lw=reg_lw)
+
+    ax.set_xlim(0, lim)
+    ax.set_ylim(0, lim)
+    ax.set_xlabel("Movement in embedding space (Euclidean)")
+    ax.set_ylabel("Movement in visualization (Euclidean)")
+    ax.set_title(f"Movement Relationship (Δt={skip})")
+    if diagonal:
+        ax.plot([0, lim], [0, lim], ls="--", lw=1, c="gray", alpha=0.6)
+
+    plt.tight_layout()
+    plt.show()
+
+    play = widgets.Play(min=skip, max=T-1, step=1, interval=250, value=skip)
+    slider = widgets.IntSlider(min=skip, max=T-1, step=1, value=skip)
+    widgets.jslink((play, 'value'), (slider, 'value'))
+
+    def _update(t):
+        idx = t - skip
+        X = emb_moves[idx]
+        Y = vis_moves[idx]
+        scat.set_offsets(np.column_stack([X, Y]))
+        if color_by_label:
+            scat.set_array(mapped_labels[idx].astype(float))
+        slope, intercept = np.polyfit(X, Y, 1)
+        reg_line.set_ydata(slope * x_line + intercept)
+
+    out = widgets.interactive_output(_update, {'t': slider})
+    display(widgets.VBox([widgets.HBox([play, slider]), out]))
+
+
+
+def plot_combined_skips(
+    animation,
+    skips=(1, 4, 8, 16),
+    point_size=2,
+    color_by_label=False,
+    cmap_small='tab10',
+    cmap_large='tab20',
+    fig_size_base=(3.5, 4),
+    diagonal=True,
+    sample_step=10,
+    alpha=0.6,
+    density_method='hist',          # 'hist' (fast default), 'kde', 'knn', or None
+    density_kwargs=None,            # dict of method-specific args
+    density_log_norm=True,          # log-scale colors by default
+    global_limits=False             # if True, uses same x/y limits across panels
+):
+    """
+    Creates a single figure with combined-all scatter+regression plots for multiple skips.
+    If color_by_label is False, dots are colored by local density using `density_method`.
+
+    Parameters
+    ----------
+    animation : object
+        Must have .run.embeddings, .projections, .run.labels; each a list/sequence over time.
+    skips : tuple
+        Skip sizes (Δt) to compare.
+    point_size : float
+        Scatter point size.
+    color_by_label : bool
+        If True, color points by label; else color by point density.
+    cmap_small, cmap_large : str
+        Categorical colormaps chosen based on number of classes.
+    fig_size : tuple
+        Matplotlib figure size.
+    diagonal : bool
+        If True, draw y=x reference line.
+    sample_step : int
+        Subsample factor for plotting (applies to points and colors).
+    alpha : float
+        Scatter alpha.
+    density_method : {'hist','knn',None}
+        Method for density coloring when color_by_label=False.
+    density_kwargs : dict or None
+        Extra args per method:
+            - 'hist': {'bins': 150}
+            - 'kde': {'bw': 'scott'}  # gaussian_kde bw_method
+            - 'knn': {'k': 20}
+    density_log_norm : bool
+        If True, uses LogNorm for density → color; otherwise linear Normalize.
+    global_limits : bool
+        If True, compute a single (0, lim) shared by all panels; otherwise per-panel.
+    """
+    density_kwargs = {} if density_kwargs is None else dict(density_kwargs)
+
+    fig_size = (fig_size_base[0] * len(skips), fig_size_base[1])
+
+    E_list = animation.run.embeddings
+    P_list = animation.projections
+    L_list = animation.run.labels
+    T = min(len(E_list), len(P_list), len(L_list))
+
+    # ---------- helpers ----------
+    def _finite_mask(*arrs):
+        mask = np.ones_like(arrs[0], dtype=bool)
+        for a in arrs:
+            mask &= np.isfinite(a)
+        return mask
+
+    def _density_colors(X, Y, lim):
+        """Return RGBA colors for each point based on local density."""
+        if density_method is None:
+            return np.full((X.shape[0], 4), plt.cm.viridis(0.5), dtype=float)
+
+        pts = np.c_[X, Y]
+
+        if density_method == 'hist':
+            bins = int(density_kwargs.get('bins', 150))
+            # Limit to bounds to keep binning comparable across panels
+            H, xedges, yedges = np.histogram2d(X, Y, bins=bins, range=[[0, lim], [0, lim]])
+            # Map points to their bin counts
+            ix = np.clip(np.digitize(X, xedges) - 1, 0, H.shape[0] - 1)
+            iy = np.clip(np.digitize(Y, yedges) - 1, 0, H.shape[1] - 1)
+            dens = H[ix, iy].astype(float) + 1e-12
+
+        elif density_method == 'knn':
+            from sklearn.neighbors import NearestNeighbors
+            k = int(density_kwargs.get('k', 20))
+            k = max(2, min(k, max(2, len(pts) - 1)))  # keep in range
+            nn = NearestNeighbors(n_neighbors=k, algorithm='auto')
+            nn.fit(pts)
+            dists, _ = nn.kneighbors(pts)
+            # Use distance to k-th neighbor as inverse density proxy
+            dens = 1.0 / (dists[:, -1] + 1e-12)
+
+        else:
+            raise ValueError("density_method must be one of {'hist','knn',None}")
+
+        # Normalize to colors
+        if density_log_norm:
+            vmin = np.percentile(dens, 5) if np.all(np.isfinite(dens)) else 1e-12
+            vmin = max(vmin, 1e-12)
+            norm = LogNorm(vmin=vmin, vmax=np.nanmax(dens))
+        else:
+            norm = Normalize(vmin=np.nanmin(dens), vmax=np.nanmax(dens))
+
+        return plt.cm.viridis(norm(dens))
+
+    # ---------- precompute optional global limits ----------
+    global_lim = None
+    if global_limits:
+        all_vals = []
+        for skip in skips:
+            if T < skip + 1:
+                continue
+            emb_moves, vis_moves = [], []
+            for t in range(skip, T):
+                emb_moves.append(np.linalg.norm(E_list[t] - E_list[t - skip], axis=1))
+                vis_moves.append(np.linalg.norm(P_list[t] - P_list[t - skip], axis=1))
+            emb_moves = np.concatenate(emb_moves).ravel()
+            vis_moves = np.concatenate(vis_moves).ravel()
+            vals = np.concatenate([emb_moves[np.isfinite(emb_moves)],
+                                   vis_moves[np.isfinite(vis_moves)]])
+            if vals.size:
+                all_vals.append(np.nanmax(vals))
+        if all_vals:
+            global_lim = 1.05 * np.nanmax(all_vals)
+
+    fig, axes = plt.subplots(1, len(skips), figsize=fig_size, squeeze=False)
+    axes = axes[0]
+
+    for ax, skip in zip(axes, skips):
+        if T < skip + 1:
+            ax.set_visible(False)
+            continue
+
+        # --- collect across time for this Δt ---
+        emb_moves, vis_moves, labels_t = [], [], []
+        for t in range(skip, T):
+            emb_moves.append(np.linalg.norm(E_list[t] - E_list[t - skip], axis=1))
+            vis_moves.append(np.linalg.norm(P_list[t] - P_list[t - skip], axis=1))
+            labels_t.append(L_list[t])
+
+        emb_moves = np.stack(emb_moves)
+        vis_moves = np.stack(vis_moves)
+        labels_t = np.stack(labels_t)
+
+        X_all = emb_moves.flatten()
+        Y_all = vis_moves.flatten()
+
+        # NaN/Inf handling
+        finite = _finite_mask(X_all, Y_all)
+        X_all = X_all[finite]
+        Y_all = Y_all[finite]
+        labels_flat = labels_t.flatten()[finite]
+
+        if X_all.size == 0:
+            ax.set_visible(False)
+            continue
+
+        lim = global_lim
+        if lim is None:
+            lim = 1.05 * np.nanmax(np.concatenate([X_all, Y_all]))
+
+        # --- colors ---
+        if color_by_label:
+            unique = np.unique(labels_flat)
+            num_classes = unique.size
+            cmap_name = cmap_small if num_classes <= 10 else cmap_large
+            label_to_idx = {lbl: i for i, lbl in enumerate(unique)}
+            mapped = np.vectorize(label_to_idx.get)(labels_flat)
+            c_arg_full = mapped
+            cmap = cmap_name
+        else:
+            rgba_full = _density_colors(X_all, Y_all, lim)
+            c_arg_full = rgba_full  # already RGBA
+            cmap = None
+
+        # --- subsample consistently ---
+        idx = np.arange(X_all.size)[::max(1, int(sample_step))]
+        ax.scatter(
+            X_all[idx], Y_all[idx],
+            s=point_size, alpha=alpha,
+            c=c_arg_full[idx],
+            cmap=cmap,
+            edgecolors='none'
+        )
+
+        # --- regression line on full finite data ---
+        slope, intercept = np.nan, np.nan
+        if X_all.size >= 2:
+            try:
+                slope, intercept = np.polyfit(X_all, Y_all, 1)
+            except Exception:
+                pass
+        x_line = np.array([0.0, lim], dtype=float)
+        if np.isfinite(slope) and np.isfinite(intercept):
+            ax.plot(x_line, slope * x_line + intercept, color='black', lw=1.5, alpha=0.7)
+
+        ax.set_xlim(0, lim)
+        ax.set_ylim(0, lim)
+        if diagonal:
+            ax.plot([0, lim], [0, lim], ls="--", lw=1, c="gray", alpha=0.6)
+
+        title = f"Δt={skip}"
+        if np.isfinite(slope):
+            title += f" ➔ Slope={slope:.3f}"
+        ax.set_title(title)
+
+        if ax is axes[0]:
+            ax.set_ylabel("Movement in visualization")
+        ax.set_xlabel("Movement in embedding")
+
+    plt.tight_layout()
+    plt.show()

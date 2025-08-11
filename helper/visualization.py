@@ -469,6 +469,24 @@ class Animation:
         return copy
 
 
+    def scatter_movements(self, skip=1, fig_size=(5.5, 5.5), combine_all=False,):
+        return plots.plot_movement_scatter(
+            self,
+            skip=skip,
+            fig_size=fig_size,
+            combine_all=combine_all
+        )
+    def evaluate_movements(self, color_by_label=False, sample_step=2, alpha=0.2, point_size=2, fig_size_base=(3, 3.5)):
+        return plots.plot_combined_skips(
+            self,
+            color_by_label=color_by_label,
+            sample_step=sample_step,
+            alpha=alpha,
+            point_size=point_size,
+            fig_size_base=fig_size_base
+        )
+
+
 
 
 
