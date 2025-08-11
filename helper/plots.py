@@ -1315,6 +1315,7 @@ def plot_combined_skips(
     fig_size_base=(3.5, 4),
     diagonal=True,
     sample_step=10,
+    start_frame=0,
     alpha=0.6,
     density_method='hist',          # 'hist' (fast default), 'kde', 'knn', or None
     density_kwargs=None,            # dict of method-specific args
@@ -1343,6 +1344,9 @@ def plot_combined_skips(
         If True, draw y=x reference line.
     sample_step : int
         Subsample factor for plotting (applies to points and colors).
+    start_frame : int
+        First frame index i to include. For each skip k, we use frames i in
+        range(max(k, start_frame), T) so that i-k >= 0 holds.
     alpha : float
         Scatter alpha.
     density_method : {'hist','knn',None}
@@ -1373,7 +1377,7 @@ def plot_combined_skips(
             mask &= np.isfinite(a)
         return mask
 
-    def _density_colors(X, Y, lim):
+    def _density_colors(X, Y, lim_x, lim_y):
         """Return RGBA colors for each point based on local density."""
         if density_method is None:
             return np.full((X.shape[0], 4), plt.cm.viridis(0.5), dtype=float)
@@ -1383,7 +1387,7 @@ def plot_combined_skips(
         if density_method == 'hist':
             bins = int(density_kwargs.get('bins', 150))
             # Limit to bounds to keep binning comparable across panels
-            H, xedges, yedges = np.histogram2d(X, Y, bins=bins, range=[[0, lim], [0, lim]])
+            H, xedges, yedges = np.histogram2d(X, Y, bins=bins, range=[[0, lim_x], [0, lim_y]])
             # Map points to their bin counts
             ix = np.clip(np.digitize(X, xedges) - 1, 0, H.shape[0] - 1)
             iy = np.clip(np.digitize(Y, yedges) - 1, 0, H.shape[1] - 1)
@@ -1413,39 +1417,57 @@ def plot_combined_skips(
         return plt.cm.viridis(norm(dens))
 
     # ---------- precompute optional global limits ----------
-    global_lim = None
+    global_lim_x = None
+    global_lim_y = None
     if global_limits:
-        all_vals = []
+        xs, ys = [], []
         for skip in skips:
             if T < skip + 1:
                 continue
+
+            t_start = max(skip, start_frame)
+            if t_start >= T:
+                continue
+
             emb_moves, vis_moves = [], []
-            for t in range(skip, T):
+            for t in range(t_start, T):
                 emb_moves.append(np.linalg.norm(E_list[t] - E_list[t - skip], axis=1))
                 vis_moves.append(np.linalg.norm(P_list[t] - P_list[t - skip], axis=1))
             emb_moves = np.concatenate(emb_moves).ravel()
             vis_moves = np.concatenate(vis_moves).ravel()
-            vals = np.concatenate([emb_moves[np.isfinite(emb_moves)],
-                                   vis_moves[np.isfinite(vis_moves)]])
-            if vals.size:
-                all_vals.append(np.nanmax(vals))
-        if all_vals:
-            global_lim = 1.05 * np.nanmax(all_vals)
+
+            if np.isfinite(emb_moves).any():
+                xs.append(np.nanmax(emb_moves[np.isfinite(emb_moves)]))
+            if np.isfinite(vis_moves).any():
+                ys.append(np.nanmax(vis_moves[np.isfinite(vis_moves)]))
+        if xs:
+            global_lim_x = 1.05 * np.nanmax(xs)
+        if ys:
+            global_lim_y = 1.05 * np.nanmax(ys)
+        # enforce lim_y > lim_x
+        if (global_lim_x is not None) and (global_lim_y is not None) and (global_lim_y <= global_lim_x):
+            global_lim_y = global_lim_x * 1.05
 
     fig, axes = plt.subplots(1, len(skips), figsize=fig_size, squeeze=False)
     axes = axes[0]
 
     for ax, skip in zip(axes, skips):
-        if T < skip + 1:
+        t_start = max(skip, start_frame)
+        if t_start >= T:
             ax.set_visible(False)
             continue
 
         # --- collect across time for this Δt ---
         emb_moves, vis_moves, labels_t = [], [], []
-        for t in range(skip, T):
+        for t in range(t_start, T):
             emb_moves.append(np.linalg.norm(E_list[t] - E_list[t - skip], axis=1))
             vis_moves.append(np.linalg.norm(P_list[t] - P_list[t - skip], axis=1))
             labels_t.append(L_list[t])
+
+        # If nothing got collected (edge cases), skip this panel safely
+        if not emb_moves:
+            ax.set_visible(False)
+            continue
 
         emb_moves = np.stack(emb_moves)
         vis_moves = np.stack(vis_moves)
@@ -1464,9 +1486,15 @@ def plot_combined_skips(
             ax.set_visible(False)
             continue
 
-        lim = global_lim
-        if lim is None:
-            lim = 1.05 * np.nanmax(np.concatenate([X_all, Y_all]))
+        lim_x = global_lim_x
+        lim_y = global_lim_y
+        if lim_x is None:
+            lim_x = 1.05 * np.nanmax(X_all)
+        if lim_y is None:
+            lim_y = 1.05 * np.nanmax(Y_all)
+        # enforce lim_y > lim_x
+        if lim_y <= lim_x:
+            lim_y = lim_x * 1.05
 
         # --- colors ---
         if color_by_label:
@@ -1478,7 +1506,7 @@ def plot_combined_skips(
             c_arg_full = mapped
             cmap = cmap_name
         else:
-            rgba_full = _density_colors(X_all, Y_all, lim)
+            rgba_full = _density_colors(X_all, Y_all, lim_x, lim_y)
             c_arg_full = rgba_full  # already RGBA
             cmap = None
 
@@ -1499,14 +1527,15 @@ def plot_combined_skips(
                 slope, intercept = np.polyfit(X_all, Y_all, 1)
             except Exception:
                 pass
-        x_line = np.array([0.0, lim], dtype=float)
+        x_line = np.array([0.0, lim_x], dtype=float)
         if np.isfinite(slope) and np.isfinite(intercept):
             ax.plot(x_line, slope * x_line + intercept, color='black', lw=1.5, alpha=0.7)
 
-        ax.set_xlim(0, lim)
-        ax.set_ylim(0, lim)
+        ax.set_xlim(0, lim_x)
+        ax.set_ylim(0, lim_y)
         if diagonal:
-            ax.plot([0, lim], [0, lim], ls="--", lw=1, c="gray", alpha=0.6)
+            d = min(lim_x, lim_y)
+            ax.plot([0, d], [0, d], ls="--", lw=1, c="gray", alpha=0.6)
 
         title = f"Δt={skip}"
         if np.isfinite(slope):

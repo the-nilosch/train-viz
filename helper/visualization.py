@@ -494,14 +494,16 @@ class Animation:
             fig_size=fig_size,
             combine_all=combine_all
         )
-    def evaluate_movements(self, color_by_label=False, sample_step=2, alpha=0.2, point_size=2, fig_size_base=(3, 3.5)):
+    def evaluate_movements(self, color_by_label=False, sample_step=2, alpha=0.2, point_size=2, fig_size_base=(3, 3.5),
+                           start_frame=0):
         return plots.plot_combined_skips(
             self,
             color_by_label=color_by_label,
             sample_step=sample_step,
             alpha=alpha,
             point_size=point_size,
-            fig_size_base=fig_size_base
+            fig_size_base=fig_size_base,
+            start_frame=start_frame
         )
 
 def load_stored_animation(run: Run, title: str):
@@ -861,7 +863,7 @@ def generate_pca_animation(
         for i in tqdm(range(max_frames), desc="PCA frames"):
             projections.append(reducer.transform(embeddings_list[i]))
 
-    return Animation(projections=projections, title=title, run=run)
+    return Animation(projections=projections, title=title, run=run).save()
 
 
 def generate_tsne_animation(
@@ -917,7 +919,7 @@ def generate_tsne_animation(
             projections.append(new)
 
 
-    return Animation(projections=projections, title=title, run=run)
+    return Animation(projections=projections, title=title, run=run).save()
 
 
 
@@ -977,7 +979,7 @@ def generate_umap_animation(
             projection = reducer.transform(embeddings_list[i])
             projections.append(projection)
 
-    return Animation(projections=projections, title=title, run=run)
+    return Animation(projections=projections, title=title, run=run).save()
 
 
 def denoise_projections(projections, blend=0.5, window_size=5, mode='window'):

@@ -126,6 +126,12 @@ def save_animation(ani: Animation):
         for i, arr in enumerate(ani.projections):
             pgrp.create_dataset(str(i), data=np.asarray(arr), compression="gzip", shuffle=True)
 
+        # CKA similarities (optional)
+        if getattr(ani, "cka_similarities", None) is not None:
+            cgrp = f.create_group("cka_similarities")
+            for k, vals in ani.cka_similarities.items():
+                cgrp.create_dataset(str(k), data=np.asarray(vals), compression="gzip", shuffle=True)
+
         # meta
         if hasattr(ani, "meta"):
             for k, v in ani.meta.items():
@@ -140,7 +146,16 @@ def load_animation(run: Run, title: str):
         p = [np.array(f["projections"][k]) for k in sorted(f["projections"].keys(), key=int)]
         meta = {k: f.attrs[k] for k in f.attrs.keys()}
 
+        cka_similarities = None
+        if "cka_similarities" in f:
+            cka_similarities = {
+                int(k): np.array(f["cka_similarities"][k])
+                for k in sorted(f["cka_similarities"].keys(), key=int)
+            }
+
     ani = Animation(p, title, run)
     ani.meta = meta
+    if cka_similarities is not None:
+        ani.cka_similarities = cka_similarities
 
     return ani
