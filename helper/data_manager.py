@@ -2,6 +2,8 @@ import h5py
 import numpy as np
 import os
 
+from helper.visualization import Animation, Run
+
 
 def flatten_and_convert(data, parent_key='', sep='#'):
     """ Recursively flattens a nested dictionary and converts lists to numpy arrays if numeric, and keeps strings. """
@@ -109,3 +111,36 @@ def load_training_data(run_id):
         f.visititems(read_group)
 
     return unflatten_dict(data)
+
+
+def save_animation(ani: Animation):
+    os.makedirs(f"trainings/{ani.run_id}", exist_ok=True)
+    path = os.path.join("trainings", ani.run_id, f"{ani.title}.h5")
+    with h5py.File(path, "a") as f:
+        # clean previous
+        if "projections" in f:
+            del f["projections"]
+
+        # projections
+        pgrp = f.create_group("projections")
+        for i, arr in enumerate(ani.projections):
+            pgrp.create_dataset(str(i), data=np.asarray(arr), compression="gzip", shuffle=True)
+
+        # meta
+        if hasattr(ani, "meta"):
+            for k, v in ani.meta.items():
+                if isinstance(v, str):
+                    f.attrs[k] = v
+                else:
+                    f.attrs[k] = np.asarray(v)
+
+def load_animation(run: Run, title: str):
+    path = os.path.join("trainings", run.run_id, f"{title}.h5")
+    with h5py.File(path, "r") as f:
+        p = [np.array(f["projections"][k]) for k in sorted(f["projections"].keys(), key=int)]
+        meta = {k: f.attrs[k] for k in f.attrs.keys()}
+
+    ani = Animation(p, title, run)
+    ani.meta = meta
+
+    return ani

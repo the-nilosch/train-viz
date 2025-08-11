@@ -4,7 +4,6 @@ from scipy.stats import pearsonr
 from tqdm.notebook import tqdm
 
 import helper.plots as plots
-from helper.data_manager import load_training_data
 
 marker_styles = ['o', 'p', '^', 'X', 'D', 'P', 'v', '<', '>', '*', "s"]
 
@@ -30,6 +29,8 @@ class Run:
         return self.cka_similarities
 
     def load(self):
+        from helper.data_manager import load_training_data
+
         loaded_results = load_training_data(self.run_id)
         loaded_results["embedding_drifts"] = {int(k): loaded_results["embedding_drifts"][k] for k in
                                        sorted(loaded_results["embedding_drifts"].keys(), key=int)}
@@ -352,8 +353,16 @@ class Animation:
         self.embedding_drifts = run.embedding_drifts.copy()
         self.cka_similarities = run.cka_similarities.copy() if run.cka_similarities is not None else None
 
+        self.meta = dict()
+        self.meta["denoised"] = False
+
     def copy(self):
         return Animation(self.projections.copy(), self.title, self.run)
+
+    def save(self):
+        from helper.data_manager import save_animation
+        save_animation(self)
+        return self
 
     def get_cka_similarities(self):
         if self.cka_similarities is None:
@@ -432,6 +441,16 @@ class Animation:
                 do_cka_similarities=True):
         copy = self.copy()
 
+        copy.meta = {
+            "denoised": True,
+            "blend": blend,
+            "window_size": window_size,
+            "mode": mode,
+            "do_projections": do_projections,
+            "do_embedding_drift": do_embedding_drift,
+            "do_cka_similarities": do_cka_similarities
+        }
+
         if do_projections:
             copy.projections = denoise_projections(
                 self.projections.copy(),
@@ -451,7 +470,7 @@ class Animation:
             )
 
         if do_cka_similarities:
-            key = f"{mode}-{blend}" if mode == 'exponential' else f"{mode}-{blend}-{window_size}"
+            key = get_denoise_key(mode, blend, window_size)
             if key in self.run.cka_similarities_denoised.keys():
                 copy.cka_similarities = self.run.cka_similarities_denoised[key]
             else:
@@ -467,7 +486,6 @@ class Animation:
             copy.cka_similarities = self.run.cka_similarities_denoised[key]
 
         return copy
-
 
     def scatter_movements(self, skip=1, fig_size=(5.5, 5.5), combine_all=False,):
         return plots.plot_movement_scatter(
@@ -486,9 +504,58 @@ class Animation:
             fig_size_base=fig_size_base
         )
 
+def load_stored_animation(run: Run, title: str):
+    import os
+    from helper.data_manager import load_animation
 
+    path = os.path.join("trainings", run.run_id, f"{title}.h5")
+    if not os.path.exists(path):
+        return None  # no cached animation
 
+    ani = load_animation(run, title)
+    print(f"Loaded cached animation: {title}")
 
+    # Guard against missing metadata
+    if not getattr(ani, "meta", None) or not ani.meta.get("denoised", False):
+        return ani
+
+    if not ani.meta.get("do_projections", True):
+        return ani
+
+    window_size = ani.meta["window_size"]
+    blend = ani.meta["blend"]
+    mode = ani.meta["mode"]
+
+    if ani.meta.get("do_embedding_drift", True):
+        ani.embedding_drifts = calculate_embedding_drift(
+            denoise_projections(
+                run.embeddings,
+                window_size=window_size,
+                blend=blend,
+                mode=mode
+            )
+        )
+
+    if ani.meta.get("do_cka_similarities", True):
+        key = get_denoise_key(mode, blend, window_size)
+        if key in run.cka_similarities_denoised.keys():
+            ani.cka_similarities = run.cka_similarities_denoised[key]
+        else:
+            print(f"As do_cka_similarities=True, compute cka similarities for denoised projections: {key}")
+            run.cka_similarities_denoised[key] = calculate_cka_similarities(
+                denoise_projections(
+                    run.embeddings,
+                    window_size=window_size,
+                    blend=blend,
+                    mode=mode
+                )
+            )
+        ani.cka_similarities = run.cka_similarities_denoised[key]
+
+    return ani
+
+def get_denoise_key(mode, blend, window_size):
+    return f"{mode}-{blend}" if mode == 'exponential' else f"{mode}-{blend}-{window_size}"
 
 def visualization_drift_vs_embedding_drift(projections, embedding_drifts, cka_similarities, verbose=True, embeddings=False,
                                            figsize=(10, 3), on_ax=None, y_lim=None, axis=1, logging=False):
@@ -732,6 +799,12 @@ def generate_pca_animation(
 
     if fit_basis == 'window':
         title = f'PCA window ({window_size}){" 3D" if out_dim == 3 else ""}'
+
+        # Try to load animation
+        ani = load_stored_animation(run, title)
+        if ani is not None:
+            return ani
+
         from scipy.linalg import orthogonal_procrustes
 
         prev_components = None
@@ -778,6 +851,11 @@ def generate_pca_animation(
 
         title = f'PCA on {fit_basis} {" 3D" if out_dim == 3 else ""}'
 
+        # Try to load animation
+        ani = load_stored_animation(run, title)
+        if ani is not None:
+            return ani
+
         reducer = PCA(n_components=out_dim)
         reducer.fit(basis_data)
         for i in tqdm(range(max_frames), desc="PCA frames"):
@@ -809,6 +887,12 @@ def generate_tsne_animation(
             f'{"reverse computation, " if reverse_computation else ""}'
             f'{"" if tsne_update == 1 else f"blending={tsne_update},"}'
              f'{" 3D" if out_dim == 3 else ""})')
+
+    # Try to load animation
+    ani = load_stored_animation(run, title)
+    if ani is not None:
+        return ani
+
     print("Initializing t-SNE...")
     tsne = TSNE(n_components=out_dim, init=tsne_init, perplexity=tsne_perplexity, random_state=random_state,
                 metric=metric)
@@ -870,6 +954,12 @@ def generate_umap_animation(
     title = (f'UMAP (n={n_neighbors}, dist={min_dist}, {metric}, '
             f'{"reverse computation, " if reverse_computation else ""}'
              f'{" 3D" if out_dim == 3 else ""})')
+
+    # Try to load animation
+    ani = load_stored_animation(run, title)
+    if ani is not None:
+        return ani
+
     reducer = umap.UMAP(n_components=out_dim,
                         n_neighbors=n_neighbors,
                         min_dist=min_dist,

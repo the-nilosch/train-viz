@@ -102,10 +102,10 @@ def general_plots(run: Run, args):
 def evaluate_pca(run: Run, args):
     logger = CSVGridLogger("plots/results_pca.csv")
 
-    ani_pca_first = generate_pca_animation(run, fit_basis='first')
-    ani_pca_last = generate_pca_animation(run, fit_basis='last')
-    ani_pca_all = generate_pca_animation(run, fit_basis='all')
-    ani_pca_window = generate_pca_animation(run, fit_basis='window', window_size=16)
+    ani_pca_first = generate_pca_animation(run, fit_basis='first').save()
+    ani_pca_last = generate_pca_animation(run, fit_basis='last').save()
+    ani_pca_all = generate_pca_animation(run, fit_basis='all').save()
+    ani_pca_window = generate_pca_animation(run, fit_basis='window', window_size=16).save()
 
     ani_pca_first.save_as_gif()
     ani_pca_last.save_as_gif()
@@ -134,8 +134,8 @@ def evaluate_pca(run: Run, args):
 
     # 3D
 
-    pca_all_3d = generate_pca_animation(run, fit_basis='all', out_dim=3)
-    pca_win_3d = generate_pca_animation(run, fit_basis='window', window_size=16, out_dim=3)
+    pca_all_3d = generate_pca_animation(run, fit_basis='all', out_dim=3).save()
+    pca_win_3d = generate_pca_animation(run, fit_basis='window', window_size=16, out_dim=3).save()
 
     logger.set_ani(run, pca_all_3d)
     logger.set_ani(run, pca_win_3d)
@@ -149,16 +149,17 @@ def evaluate_pca(run: Run, args):
 def evaluate_tsne(run: Run, args):
     logger = CSVGridLogger("plots/results_tsne.csv")
 
-    tsne_animation = generate_tsne_animation(run)
+    tsne_animation = generate_tsne_animation(run).save()
     tsne_denoised = tsne_animation.denoise(blend=0.8, mode='exponential')
-    tsne_blended_03 = generate_tsne_animation(run, tsne_update=0.3)
-    tsne_blended_02 = generate_tsne_animation(run, tsne_update=0.2)
-    tsne_cosine_03 = generate_tsne_animation(run, tsne_update=0.3, metric='cosine')
-    tsne_cosine_02 = generate_tsne_animation(run, tsne_update=0.2, metric='cosine')
-    tsne_p_5 = generate_tsne_animation(run, tsne_perplexity=5, metric='cosine')
-    tsne_p_10 = generate_tsne_animation(run, tsne_perplexity=10, metric='cosine')
-    tsne_p_30 = generate_tsne_animation(run, tsne_perplexity=30, metric='cosine')
-    tsne_p_50 = generate_tsne_animation(run, tsne_perplexity=50, metric='cosine')
+
+    tsne_blended_03 = generate_tsne_animation(run, tsne_update=0.3).save()
+    tsne_blended_02 = generate_tsne_animation(run, tsne_update=0.2).save()
+    tsne_cosine_03 = generate_tsne_animation(run, tsne_update=0.3, metric='cosine').save()
+    tsne_cosine_02 = generate_tsne_animation(run, tsne_update=0.2, metric='cosine').save()
+    tsne_p_5 = generate_tsne_animation(run, tsne_perplexity=5, metric='cosine').save()
+    tsne_p_10 = generate_tsne_animation(run, tsne_perplexity=10, metric='cosine').save()
+    tsne_p_30 = generate_tsne_animation(run, tsne_perplexity=30, metric='cosine').save()
+    tsne_p_50 = generate_tsne_animation(run, tsne_perplexity=50, metric='cosine').save()
 
     tsne_animation.save_as_gif()
     tsne_denoised.save_as_gif()
@@ -191,8 +192,8 @@ def evaluate_umap(run: Run, args):
     warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn.utils.deprecation")
 
     # Cosine vs Euclidean
-    umap_ani = generate_umap_animation(run, fit_basis='all_n')
-    umap_cosine = generate_umap_animation(run, fit_basis='all_n', metric='cosine')
+    umap_ani = generate_umap_animation(run, fit_basis='all_n').save()
+    umap_cosine = generate_umap_animation(run, fit_basis='all_n', metric='cosine').save()
     umap_ani.save_as_gif()
     umap_cosine.save_as_gif()
     logger.set_ani(run, umap_ani)
@@ -207,11 +208,11 @@ def evaluate_umap(run: Run, args):
     logger.set_ani(run, umap_cosine_denoised)
 
     # Neighbors
-    umap_neighbors_5 = generate_umap_animation(run, metric='cosine', n_neighbors=5)
-    umap_neighbors_10 = generate_umap_animation(run, metric='cosine', n_neighbors=10)
-    umap_neighbors_20 = generate_umap_animation(run, metric='cosine', n_neighbors=20)
-    umap_neighbors_30 = generate_umap_animation(run, metric='cosine', n_neighbors=30)
-    umap_neighbors_50 = generate_umap_animation(run, metric='cosine', n_neighbors=50)
+    umap_neighbors_5 = generate_umap_animation(run, metric='cosine', n_neighbors=5).save()
+    umap_neighbors_10 = generate_umap_animation(run, metric='cosine', n_neighbors=10).save()
+    umap_neighbors_20 = generate_umap_animation(run, metric='cosine', n_neighbors=20).save()
+    umap_neighbors_30 = generate_umap_animation(run, metric='cosine', n_neighbors=30).save()
+    umap_neighbors_50 = generate_umap_animation(run, metric='cosine', n_neighbors=50).save()
 
     umap_neighbors_5.save_as_gif()
     umap_neighbors_10.save_as_gif()
@@ -232,10 +233,10 @@ def evaluate_umap(run: Run, args):
     logger.set_ani(run, umap_neighbors_50.denoise())
 
     # Min Dist
-    umap_dist_001 = generate_umap_animation(run, metric='cosine', min_dist=0.001)
-    umap_dist_01 = generate_umap_animation(run, metric='cosine', min_dist=0.01)
-    umap_dist_2 = generate_umap_animation(run, metric='cosine', min_dist=0.2)
-    umap_dist_5 = generate_umap_animation(run, metric='cosine', min_dist=0.5)
+    umap_dist_001 = generate_umap_animation(run, metric='cosine', min_dist=0.001).save()
+    umap_dist_01 = generate_umap_animation(run, metric='cosine', min_dist=0.01).save()
+    umap_dist_2 = generate_umap_animation(run, metric='cosine', min_dist=0.2).save()
+    umap_dist_5 = generate_umap_animation(run, metric='cosine', min_dist=0.5).save()
 
     umap_dist_001.save_as_gif()
     umap_dist_01.save_as_gif()
