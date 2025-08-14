@@ -209,80 +209,80 @@ def evaluate_umap(run: Run, args):
     import warnings
     warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn.utils.deprecation")
 
-#    # Cosine vs Euclidean
-#    umap_ani = generate_umap_animation(run, fit_basis='all_n')
-#    umap_cosine = generate_umap_animation(run, fit_basis='all_n', metric='cosine')
-#    umap_ani.save_as_gif()
-#    umap_cosine.save_as_gif()
-#    save_animation_eval(umap_ani)
-#    save_animation_eval(umap_cosine)
-#    logger.set_ani(run, umap_ani)
-#    logger.set_ani(run, umap_cosine)
-#
-#    # Denoised
-#    umap_ani_denoised = umap_ani.denoise()
-#    umap_cosine_denoised = umap_cosine.denoise()
-#    umap_ani_denoised.save_as_gif()
-#    umap_cosine_denoised.save_as_gif()
-#    save_animation_eval(umap_ani_denoised)
-#    save_animation_eval(umap_cosine_denoised)
-#    logger.set_ani(run, umap_ani_denoised)
-#    logger.set_ani(run, umap_cosine_denoised)
-#
-#    # Neighbors
-#    umap_neighbors_5 = generate_umap_animation(run, metric='cosine', n_neighbors=5)
-#    umap_neighbors_10 = generate_umap_animation(run, metric='cosine', n_neighbors=10)
-#    umap_neighbors_20 = generate_umap_animation(run, metric='cosine', n_neighbors=20)
-#    umap_neighbors_30 = generate_umap_animation(run, metric='cosine', n_neighbors=30)
-#    umap_neighbors_50 = generate_umap_animation(run, metric='cosine', n_neighbors=50)
-#
-#    umap_neighbors_5.save_as_gif()
-#    umap_neighbors_10.save_as_gif()
-#    umap_neighbors_20.save_as_gif()
-#    umap_neighbors_30.save_as_gif()
-#    umap_neighbors_50.save_as_gif()
-#    save_animation_eval(umap_neighbors_5)
-#    save_animation_eval(umap_neighbors_10)
-#    save_animation_eval(umap_neighbors_20)
-#    save_animation_eval(umap_neighbors_30)
-#    save_animation_eval(umap_neighbors_50)
-#
-#    logger.set_ani(run, umap_neighbors_5)
-#    logger.set_ani(run, umap_neighbors_10)
-#    logger.set_ani(run, umap_neighbors_20)
-#    logger.set_ani(run, umap_neighbors_30)
-#    logger.set_ani(run, umap_neighbors_50)
-#
-#    logger.set_ani(run, umap_neighbors_5.denoise())
-#    logger.set_ani(run, umap_neighbors_10.denoise())
-#    logger.set_ani(run, umap_neighbors_20.denoise())
-#    logger.set_ani(run, umap_neighbors_30.denoise())
-#    logger.set_ani(run, umap_neighbors_50.denoise())
-#
-#    # Min Dist
-#    umap_dist_001 = generate_umap_animation(run, metric='cosine', min_dist=0.001)
-#    umap_dist_01 = generate_umap_animation(run, metric='cosine', min_dist=0.01)
-#    umap_dist_2 = generate_umap_animation(run, metric='cosine', min_dist=0.2)
-#    umap_dist_5 = generate_umap_animation(run, metric='cosine', min_dist=0.5)
-#
-#    umap_dist_001.save_as_gif()
-#    umap_dist_01.save_as_gif()
-#    umap_dist_2.save_as_gif()
-#    umap_dist_5.save_as_gif()
-#    save_animation_eval(umap_dist_001)
-#    save_animation_eval(umap_dist_01)
-#    save_animation_eval(umap_dist_2)
-#    save_animation_eval(umap_dist_5)
-#
-#    logger.set_ani(run, umap_dist_001)
-#    logger.set_ani(run, umap_dist_01)
-#    logger.set_ani(run, umap_dist_2)
-#    logger.set_ani(run, umap_dist_5)
-#
-#    logger.set_ani(run, umap_dist_001.denoise())
-#    logger.set_ani(run, umap_dist_01.denoise())
-#    logger.set_ani(run, umap_dist_2.denoise())
-#    logger.set_ani(run, umap_dist_5.denoise())
+    # Cosine vs Euclidean
+    umap_ani = generate_umap_animation(run, fit_basis='all_n')
+    umap_cosine = generate_umap_animation(run, fit_basis='all_n', metric='cosine')
+    umap_ani.save_as_gif()
+    umap_cosine.save_as_gif()
+    save_animation_eval(umap_ani)
+    save_animation_eval(umap_cosine)
+    logger.set_ani(run, umap_ani)
+    logger.set_ani(run, umap_cosine)
+
+    # Denoised
+    umap_ani_denoised = umap_ani.denoise()
+    umap_cosine_denoised = umap_cosine.denoise()
+    umap_ani_denoised.save_as_gif()
+    umap_cosine_denoised.save_as_gif()
+    save_animation_eval(umap_ani_denoised)
+    save_animation_eval(umap_cosine_denoised)
+    logger.set_ani(run, umap_ani_denoised)
+    logger.set_ani(run, umap_cosine_denoised)
+
+    # Neighbors
+    umap_neighbors_5 = generate_umap_animation(run, metric='cosine', n_neighbors=5)
+    umap_neighbors_10 = generate_umap_animation(run, metric='cosine', n_neighbors=10)
+    umap_neighbors_20 = generate_umap_animation(run, metric='cosine', n_neighbors=20)
+    umap_neighbors_30 = generate_umap_animation(run, metric='cosine', n_neighbors=30)
+    umap_neighbors_50 = generate_umap_animation(run, metric='cosine', n_neighbors=50)
+
+    umap_neighbors_5.save_as_gif()
+    umap_neighbors_10.save_as_gif()
+    umap_neighbors_20.save_as_gif()
+    umap_neighbors_30.save_as_gif()
+    umap_neighbors_50.save_as_gif()
+    save_animation_eval(umap_neighbors_5)
+    save_animation_eval(umap_neighbors_10)
+    save_animation_eval(umap_neighbors_20)
+    save_animation_eval(umap_neighbors_30)
+    save_animation_eval(umap_neighbors_50)
+
+    logger.set_ani(run, umap_neighbors_5)
+    logger.set_ani(run, umap_neighbors_10)
+    logger.set_ani(run, umap_neighbors_20)
+    logger.set_ani(run, umap_neighbors_30)
+    logger.set_ani(run, umap_neighbors_50)
+
+    logger.set_ani(run, umap_neighbors_5.denoise())
+    logger.set_ani(run, umap_neighbors_10.denoise())
+    logger.set_ani(run, umap_neighbors_20.denoise())
+    logger.set_ani(run, umap_neighbors_30.denoise())
+    logger.set_ani(run, umap_neighbors_50.denoise())
+
+    # Min Dist
+    umap_dist_001 = generate_umap_animation(run, metric='cosine', min_dist=0.001)
+    umap_dist_01 = generate_umap_animation(run, metric='cosine', min_dist=0.01)
+    umap_dist_2 = generate_umap_animation(run, metric='cosine', min_dist=0.2)
+    umap_dist_5 = generate_umap_animation(run, metric='cosine', min_dist=0.5)
+
+    umap_dist_001.save_as_gif()
+    umap_dist_01.save_as_gif()
+    umap_dist_2.save_as_gif()
+    umap_dist_5.save_as_gif()
+    save_animation_eval(umap_dist_001)
+    save_animation_eval(umap_dist_01)
+    save_animation_eval(umap_dist_2)
+    save_animation_eval(umap_dist_5)
+
+    logger.set_ani(run, umap_dist_001)
+    logger.set_ani(run, umap_dist_01)
+    logger.set_ani(run, umap_dist_2)
+    logger.set_ani(run, umap_dist_5)
+
+    logger.set_ani(run, umap_dist_001.denoise())
+    logger.set_ani(run, umap_dist_01.denoise())
+    logger.set_ani(run, umap_dist_2.denoise())
+    logger.set_ani(run, umap_dist_5.denoise())
 
     # Educated Guess
     umap_guess = generate_umap_animation(run, metric='cosine', min_dist=0.2, n_neighbors=20).denoise()
@@ -352,9 +352,9 @@ def save_animation_eval(animation: Animation):
 if __name__ == "__main__":
     run, args = init_run()
 
-    general_plots(run, args)
-    evaluate_pca(run, args)
-    evaluate_umap(run, args)
-    evaluate_phate(run, args)
-    evaluate_tsne(run, args)
+    #general_plots(run, args)
+    #evaluate_pca(run, args)
+    #evaluate_umap(run, args)
+    #evaluate_phate(run, args)
+    #evaluate_tsne(run, args)
 

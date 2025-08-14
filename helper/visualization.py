@@ -986,6 +986,76 @@ def generate_umap_animation(
 
     return Animation(projections=projections, title=title, run=run).save()
 
+def generate_phate_animation(
+        run: Run,
+        max_frames=None,
+        out_dim=2,
+        knn=5,
+        decay=40,
+        t=20,
+        n_jobs=-1,
+        random_state=42,
+        window=0  # number of frames before to include for fitting
+):
+    import phate
+    import numpy as np
+    from tqdm import tqdm
+    from scipy.linalg import orthogonal_procrustes
+
+    embeddings_list = run.embeddings.copy()
+    max_frames = max_frames or len(embeddings_list)
+    projections = []
+
+    title = f'PHATE (knn={knn}, decay={decay}, t={t}, window={window})'
+
+    prev_projection = None
+
+    for i in tqdm(range(max_frames), desc="PHATE frames"):
+        # Determine window range
+        start = max(0, i - window)
+        end = min(max_frames, i + 1)
+        fit_data = np.concatenate(embeddings_list[start:end], axis=0)
+
+        # Fit PHATE on the windowed data
+        phate_op = phate.PHATE(
+            n_components=out_dim,
+            knn=knn,
+            decay=decay,
+            t=t,
+            n_jobs=n_jobs,
+            random_state=random_state,
+            verbose=False
+        )
+        fit_projection = phate_op.fit_transform(fit_data)
+
+        # Extract just the projection for the current frame
+        current_len = len(embeddings_list[i])
+        offset = sum(len(embeddings_list[j]) for j in range(start, i))
+        projection = fit_projection[offset:offset + current_len]
+
+        # Flip and align using orthogonal Procrustes
+        if prev_projection is not None:
+            R, _ = orthogonal_procrustes(projection, prev_projection)
+            projection = projection @ R
+
+        projections.append(projection)
+        prev_projection = projection.copy()
+
+    return Animation(projections=projections, title=title, run=run)
+
+def generate_mphate_animation(run: Run, title="M-PHATE", t='auto', gamma=0, interslice_knn=25, *args, **kwargs):
+    file_title = f"M-PHATE gm={gamma} knn={interslice_knn} t={t}"
+
+    ani = load_stored_animation(run, file_title)
+    if ani is not None:
+        ani.title = title
+        return ani
+
+    mphate_emb = compute_mphate_embeddings(run, gamma=gamma, interslice_knn=interslice_knn, t=t, *args, **kwargs)
+    projections = [mphate_emb[i] for i in range(mphate_emb.shape[0])]
+
+    return Animation(projections=projections, title=title, run=run).save(file_title=file_title)
+
 
 def denoise_projections(projections, blend=0.5, window_size=5, mode='window'):
     """
