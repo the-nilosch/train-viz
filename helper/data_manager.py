@@ -113,9 +113,9 @@ def load_training_data(run_id):
     return unflatten_dict(data)
 
 
-def save_animation(ani: Animation):
+def save_animation(ani: Animation, file_title: str = None):
     os.makedirs(f"trainings/{ani.run_id}", exist_ok=True)
-    path = os.path.join("trainings", ani.run_id, f"{ani.title}.h5")
+    path = os.path.join("trainings", ani.run_id, f"{ani.title if file_title is None else file_title}.h5")
     with h5py.File(path, "a") as f:
         # clean previous
         if "projections" in f:
@@ -128,6 +128,8 @@ def save_animation(ani: Animation):
 
         # CKA similarities (optional)
         if getattr(ani, "cka_similarities", None) is not None:
+            if "cka_similarities" in f:
+                del f["cka_similarities"]
             cgrp = f.create_group("cka_similarities")
             for k, vals in ani.cka_similarities.items():
                 cgrp.create_dataset(str(k), data=np.asarray(vals), compression="gzip", shuffle=True)

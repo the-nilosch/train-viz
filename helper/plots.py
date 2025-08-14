@@ -1305,246 +1305,323 @@ def plot_movement_scatter(
 
 
 
-def plot_combined_skips(
+def plot_combined_skips(*args, **kwargs):
+    # No viz-drift panel
+    _combined_skips_core(*args, include_viz_drift=False, show=True, **kwargs)
+
+def evaluation_plot(*args, **kwargs):
+    # With viz-drift panel
+    fig, _ = _combined_skips_core(*args, include_viz_drift=True, show=False, **kwargs)
+    return fig
+
+# ---------- tiny helpers (shared) ----------
+
+def _finite_mask(*arrs):
+    mask = np.ones_like(arrs[0], dtype=bool)
+    for a in arrs:
+        mask &= np.isfinite(a)
+    return mask
+
+def _density_colors(X, Y, lim_x, lim_y, method, dkwargs, log_norm):
+    if method is None:
+        return np.full((X.shape[0], 4), plt.cm.viridis(0.5), dtype=float)
+
+    pts = np.c_[X, Y]
+    if method == 'hist':
+        bins = int(dkwargs.get('bins', 150))
+        H, xedges, yedges = np.histogram2d(X, Y, bins=bins, range=[[0, lim_x], [0, lim_y]])
+        ix = np.clip(np.digitize(X, xedges) - 1, 0, H.shape[0]-1)
+        iy = np.clip(np.digitize(Y, yedges) - 1, 0, H.shape[1]-1)
+        dens = H[ix, iy].astype(float) + 1e-12
+    elif method == 'kde':
+        from scipy.stats import gaussian_kde
+        bw = dkwargs.get('bw', 'scott')
+        kde = gaussian_kde(pts.T, bw_method=bw)
+        dens = kde(pts.T) + 1e-12
+    elif method == 'knn':
+        from sklearn.neighbors import NearestNeighbors
+        k = int(dkwargs.get('k', 20))
+        k = max(2, min(k, max(2, len(pts) - 1)))
+        nn = NearestNeighbors(n_neighbors=k)
+        nn.fit(pts)
+        dists, _ = nn.kneighbors(pts)
+        dens = 1.0 / (dists[:, -1] + 1e-12)
+    else:
+        raise ValueError("density_method must be one of {'hist','kde','knn',None}")
+
+    if log_norm:
+        vmin = max(np.percentile(dens, 5) if np.all(np.isfinite(dens)) else 1e-12, 1e-12)
+        norm = LogNorm(vmin=vmin, vmax=np.nanmax(dens))
+    else:
+        norm = Normalize(vmin=np.nanmin(dens), vmax=np.nanmax(dens))
+    return plt.cm.viridis(norm(dens))
+
+def _compute_global_limits(E_list, P_list, skips, start_frame, T):
+    xs, ys = [], []
+    for skip in skips:
+        if T < skip + 1:
+            continue
+        t_start = max(skip, start_frame)
+        if t_start >= T:
+            continue
+        em, vm = [], []
+        for t in range(t_start, T):
+            em.append(np.linalg.norm(E_list[t] - E_list[t - skip], axis=1))
+            vm.append(np.linalg.norm(P_list[t] - P_list[t - skip], axis=1))
+        if em:
+            em = np.concatenate(em).ravel()
+            if np.isfinite(em).any():
+                xs.append(np.nanmax(em[np.isfinite(em)]))
+        if vm:
+            vm = np.concatenate(vm).ravel()
+            if np.isfinite(vm).any():
+                ys.append(np.nanmax(vm[np.isfinite(vm)]))
+    lim_x = 1.05 * np.nanmax(xs) if xs else None
+    lim_y = 1.05 * np.nanmax(ys) if ys else None
+    # if (lim_x is not None) and (lim_y is not None) and (lim_y <= lim_x):
+    #     lim_y = lim_x * 1.05
+    return lim_x, lim_y
+
+def _scatter_panel(ax, X_all, Y_all, labels_flat, *,
+                   color_by_label, cmap_small, cmap_large,
+                   sample_step, point_size, alpha,
+                   diagonal, glx, gly):
+    lim_x = glx if glx is not None else 1.05 * np.nanmax(X_all)
+    lim_y = gly if gly is not None else 1.05 * np.nanmax(Y_all)
+    if lim_y <= lim_x:
+        lim_y = lim_x * 1.05
+
+    if color_by_label is True:
+        unique = np.unique(labels_flat)
+        cmap_name = cmap_small if unique.size <= 10 else cmap_large
+        label_to_idx = {lbl: i for i, lbl in enumerate(unique)}
+        mapped = np.vectorize(label_to_idx.get)(labels_flat)
+        c = mapped; cmap = cmap_name
+    else:
+        # density coloring is passed in via partial to avoid re-specifying params
+        raise RuntimeError("Call _scatter_panel with color_by_label=False via the density wrapper below.")
+
+    # basic scatter (label-colored)
+    idx = np.arange(X_all.size)[::max(1, int(sample_step))]
+    ax.scatter(X_all[idx], Y_all[idx], s=point_size, alpha=alpha, c=c[idx], cmap=cmap, edgecolors='none')
+
+    # regression
+    slope, intercept = np.nan, np.nan
+    if X_all.size >= 2:
+        try:
+            slope, intercept = np.polyfit(X_all, Y_all, 1)
+        except Exception:
+            pass
+    x_line = np.array([0.0, lim_x], dtype=float)
+    if np.isfinite(slope) and np.isfinite(intercept):
+        ax.plot(x_line, slope * x_line + intercept, color='black', lw=1.5, alpha=0.7)
+
+    ax.set_xlim(0, lim_x); ax.set_ylim(0, lim_y)
+    if diagonal:
+        d = min(lim_x, lim_y)
+        ax.plot([0, d], [0, d], ls="--", lw=1, c="gray", alpha=0.6)
+    return slope
+
+def _scatter_panel_density(ax, X_all, Y_all, *, sample_step, point_size, alpha, diagonal, glx, gly,
+                           density_method, density_kwargs, density_log_norm):
+    lim_x = glx if glx is not None else 1.05 * np.nanmax(X_all)
+    lim_y = gly if gly is not None else 1.05 * np.nanmax(Y_all)
+    if lim_y <= lim_x:
+        lim_y = lim_x * 1.05
+
+    rgba = _density_colors(X_all, Y_all, lim_x, lim_y, density_method, density_kwargs, density_log_norm)
+    idx = np.arange(X_all.size)[::max(1, int(sample_step))]
+    ax.scatter(X_all[idx], Y_all[idx], s=point_size, alpha=alpha, c=rgba[idx], edgecolors='none')
+
+    slope, intercept = np.nan, np.nan
+    if X_all.size >= 2:
+        try:
+            slope, intercept = np.polyfit(X_all, Y_all, 1)
+        except Exception:
+            pass
+    x_line = np.array([0.0, lim_x], dtype=float)
+    if np.isfinite(slope) and np.isfinite(intercept):
+        ax.plot(x_line, slope * x_line + intercept, color='black', lw=1.5, alpha=0.7)
+
+    ax.set_xlim(0, lim_x); ax.set_ylim(0, lim_y)
+    if diagonal:
+        d = min(lim_x, lim_y)
+        ax.plot([0, d], [0, d], ls="--", lw=1, c="gray", alpha=0.6)
+    return slope
+
+# ---------- single core builder ----------
+
+def _combined_skips_core(
     animation,
-    skips=(1, 4, 8, 16),
-    point_size=2,
-    color_by_label=False,
-    cmap_small='tab10',
-    cmap_large='tab20',
-    fig_size_base=(3.5, 4),
-    diagonal=True,
-    sample_step=10,
-    start_frame=0,
-    alpha=0.6,
-    density_method='hist',          # 'hist' (fast default), 'kde', 'knn', or None
-    density_kwargs=None,            # dict of method-specific args
-    density_log_norm=True,          # log-scale colors by default
-    global_limits=False             # if True, uses same x/y limits across panels
+    *,
+    skips=(1,4,8,16),
+    include_viz_drift=False,
+    # visuals
+    point_size=2, color_by_label=False, cmap_small='tab10', cmap_large='tab20',
+    fig_size_base=(3.5, 4), diagonal=True, sample_step=10, start_frame=0, alpha=0.6,
+    density_method='hist', density_kwargs=None, density_log_norm=True, global_limits=False,
+    # --- new background opts ---
+    show_background=True,
+    emb_bg_color="#bababa",    # light gray
+    emb_bg_alpha=0.8,
+    cka_bg_color="#fce97e",    # light yellow
+    cka_bg_alpha=0.8,
+    # viz panel
+    viz_axis=1, viz_y_lim=None, viz_title="Visualization Drift",
+    show=False
 ):
-    """
-    Creates a single figure with combined-all scatter+regression plots for multiple skips.
-    If color_by_label is False, dots are colored by local density using `density_method`.
-
-    Parameters
-    ----------
-    animation : object
-        Must have .run.embeddings, .projections, .run.labels; each a list/sequence over time.
-    skips : tuple
-        Skip sizes (Δt) to compare.
-    point_size : float
-        Scatter point size.
-    color_by_label : bool
-        If True, color points by label; else color by point density.
-    cmap_small, cmap_large : str
-        Categorical colormaps chosen based on number of classes.
-    fig_size : tuple
-        Matplotlib figure size.
-    diagonal : bool
-        If True, draw y=x reference line.
-    sample_step : int
-        Subsample factor for plotting (applies to points and colors).
-    start_frame : int
-        First frame index i to include. For each skip k, we use frames i in
-        range(max(k, start_frame), T) so that i-k >= 0 holds.
-    alpha : float
-        Scatter alpha.
-    density_method : {'hist','knn',None}
-        Method for density coloring when color_by_label=False.
-    density_kwargs : dict or None
-        Extra args per method:
-            - 'hist': {'bins': 150}
-            - 'kde': {'bw': 'scott'}  # gaussian_kde bw_method
-            - 'knn': {'k': 20}
-    density_log_norm : bool
-        If True, uses LogNorm for density → color; otherwise linear Normalize.
-    global_limits : bool
-        If True, compute a single (0, lim) shared by all panels; otherwise per-panel.
-    """
     density_kwargs = {} if density_kwargs is None else dict(density_kwargs)
-
-    fig_size = (fig_size_base[0] * len(skips), fig_size_base[1])
 
     E_list = animation.run.embeddings
     P_list = animation.projections
     L_list = animation.run.labels
     T = min(len(E_list), len(P_list), len(L_list))
 
-    # ---------- helpers ----------
-    def _finite_mask(*arrs):
-        mask = np.ones_like(arrs[0], dtype=bool)
-        for a in arrs:
-            mask &= np.isfinite(a)
-        return mask
-
-    def _density_colors(X, Y, lim_x, lim_y):
-        """Return RGBA colors for each point based on local density."""
-        if density_method is None:
-            return np.full((X.shape[0], 4), plt.cm.viridis(0.5), dtype=float)
-
-        pts = np.c_[X, Y]
-
-        if density_method == 'hist':
-            bins = int(density_kwargs.get('bins', 150))
-            # Limit to bounds to keep binning comparable across panels
-            H, xedges, yedges = np.histogram2d(X, Y, bins=bins, range=[[0, lim_x], [0, lim_y]])
-            # Map points to their bin counts
-            ix = np.clip(np.digitize(X, xedges) - 1, 0, H.shape[0] - 1)
-            iy = np.clip(np.digitize(Y, yedges) - 1, 0, H.shape[1] - 1)
-            dens = H[ix, iy].astype(float) + 1e-12
-
-        elif density_method == 'knn':
-            from sklearn.neighbors import NearestNeighbors
-            k = int(density_kwargs.get('k', 20))
-            k = max(2, min(k, max(2, len(pts) - 1)))  # keep in range
-            nn = NearestNeighbors(n_neighbors=k, algorithm='auto')
-            nn.fit(pts)
-            dists, _ = nn.kneighbors(pts)
-            # Use distance to k-th neighbor as inverse density proxy
-            dens = 1.0 / (dists[:, -1] + 1e-12)
-
-        else:
-            raise ValueError("density_method must be one of {'hist','knn',None}")
-
-        # Normalize to colors
-        if density_log_norm:
-            vmin = np.percentile(dens, 5) if np.all(np.isfinite(dens)) else 1e-12
-            vmin = max(vmin, 1e-12)
-            norm = LogNorm(vmin=vmin, vmax=np.nanmax(dens))
-        else:
-            norm = Normalize(vmin=np.nanmin(dens), vmax=np.nanmax(dens))
-
-        return plt.cm.viridis(norm(dens))
-
-    # ---------- precompute optional global limits ----------
-    global_lim_x = None
-    global_lim_y = None
+    glx = gly = None
     if global_limits:
-        xs, ys = [], []
-        for skip in skips:
-            if T < skip + 1:
-                continue
+        glx, gly = _compute_global_limits(E_list, P_list, skips, start_frame, T)
 
-            t_start = max(skip, start_frame)
-            if t_start >= T:
-                continue
-
-            emb_moves, vis_moves = [], []
-            for t in range(t_start, T):
-                emb_moves.append(np.linalg.norm(E_list[t] - E_list[t - skip], axis=1))
-                vis_moves.append(np.linalg.norm(P_list[t] - P_list[t - skip], axis=1))
-            emb_moves = np.concatenate(emb_moves).ravel()
-            vis_moves = np.concatenate(vis_moves).ravel()
-
-            if np.isfinite(emb_moves).any():
-                xs.append(np.nanmax(emb_moves[np.isfinite(emb_moves)]))
-            if np.isfinite(vis_moves).any():
-                ys.append(np.nanmax(vis_moves[np.isfinite(vis_moves)]))
-        if xs:
-            global_lim_x = 1.05 * np.nanmax(xs)
-        if ys:
-            global_lim_y = 1.05 * np.nanmax(ys)
-        # enforce lim_y > lim_x
-        if (global_lim_x is not None) and (global_lim_y is not None) and (global_lim_y <= global_lim_x):
-            global_lim_y = global_lim_x * 1.05
-
-    fig, axes = plt.subplots(1, len(skips), figsize=fig_size, squeeze=False)
+    n_scatter = len(skips)
+    n_cols = n_scatter + (1 if include_viz_drift else 0)
+    fig_size = (fig_size_base[0] * n_cols, fig_size_base[1])
+    fig, axes = plt.subplots(1, n_cols, figsize=fig_size, squeeze=False)
     axes = axes[0]
 
-    for ax, skip in zip(axes, skips):
+    scatter_axes = axes[:n_scatter]
+    viz_ax = axes[-1] if include_viz_drift else None
+
+    # --- scatter panels
+    for ax, skip in zip(scatter_axes, skips):
         t_start = max(skip, start_frame)
         if t_start >= T:
             ax.set_visible(False)
             continue
 
-        # --- collect across time for this Δt ---
         emb_moves, vis_moves, labels_t = [], [], []
         for t in range(t_start, T):
             emb_moves.append(np.linalg.norm(E_list[t] - E_list[t - skip], axis=1))
             vis_moves.append(np.linalg.norm(P_list[t] - P_list[t - skip], axis=1))
             labels_t.append(L_list[t])
-
-        # If nothing got collected (edge cases), skip this panel safely
         if not emb_moves:
-            ax.set_visible(False)
-            continue
+            ax.set_visible(False); continue
 
-        emb_moves = np.stack(emb_moves)
-        vis_moves = np.stack(vis_moves)
-        labels_t = np.stack(labels_t)
+        X_all = np.stack(emb_moves).flatten()
+        Y_all = np.stack(vis_moves).flatten()
+        labels_flat = np.stack(labels_t).flatten()
 
-        X_all = emb_moves.flatten()
-        Y_all = vis_moves.flatten()
-
-        # NaN/Inf handling
         finite = _finite_mask(X_all, Y_all)
-        X_all = X_all[finite]
-        Y_all = Y_all[finite]
-        labels_flat = labels_t.flatten()[finite]
-
+        X_all = X_all[finite]; Y_all = Y_all[finite]; labels_flat = labels_flat[finite]
         if X_all.size == 0:
-            ax.set_visible(False)
-            continue
+            ax.set_visible(False); continue
 
-        lim_x = global_lim_x
-        lim_y = global_lim_y
-        if lim_x is None:
-            lim_x = 1.05 * np.nanmax(X_all)
-        if lim_y is None:
-            lim_y = 1.05 * np.nanmax(Y_all)
-        # enforce lim_y > lim_x
-        if lim_y <= lim_x:
-            lim_y = lim_x * 1.05
-
-        # --- colors ---
         if color_by_label:
-            unique = np.unique(labels_flat)
-            num_classes = unique.size
-            cmap_name = cmap_small if num_classes <= 10 else cmap_large
-            label_to_idx = {lbl: i for i, lbl in enumerate(unique)}
-            mapped = np.vectorize(label_to_idx.get)(labels_flat)
-            c_arg_full = mapped
-            cmap = cmap_name
+            slope = _scatter_panel(ax, X_all, Y_all, labels_flat,
+                                   color_by_label=True, cmap_small=cmap_small, cmap_large=cmap_large,
+                                   sample_step=sample_step, point_size=point_size, alpha=alpha,
+                                   diagonal=diagonal, glx=glx, gly=gly)
         else:
-            rgba_full = _density_colors(X_all, Y_all, lim_x, lim_y)
-            c_arg_full = rgba_full  # already RGBA
-            cmap = None
+            slope = _scatter_panel_density(ax, X_all, Y_all,
+                                           sample_step=sample_step, point_size=point_size, alpha=alpha,
+                                           diagonal=diagonal, glx=glx, gly=gly,
+                                           density_method=density_method,
+                                           density_kwargs=density_kwargs,
+                                           density_log_norm=density_log_norm)
 
-        # --- subsample consistently ---
-        idx = np.arange(X_all.size)[::max(1, int(sample_step))]
-        ax.scatter(
-            X_all[idx], Y_all[idx],
-            s=point_size, alpha=alpha,
-            c=c_arg_full[idx],
-            cmap=cmap,
-            edgecolors='none'
-        )
-
-        # --- regression line on full finite data ---
-        slope, intercept = np.nan, np.nan
-        if X_all.size >= 2:
-            try:
-                slope, intercept = np.polyfit(X_all, Y_all, 1)
-            except Exception:
-                pass
-        x_line = np.array([0.0, lim_x], dtype=float)
-        if np.isfinite(slope) and np.isfinite(intercept):
-            ax.plot(x_line, slope * x_line + intercept, color='black', lw=1.5, alpha=0.7)
-
-        ax.set_xlim(0, lim_x)
-        ax.set_ylim(0, lim_y)
-        if diagonal:
-            d = min(lim_x, lim_y)
-            ax.plot([0, d], [0, d], ls="--", lw=1, c="gray", alpha=0.6)
-
-        title = f"Δt={skip}"
-        if np.isfinite(slope):
-            title += f" ➔ Slope={slope:.3f}"
+        title = f"Δt={skip}" + (f"  (slope={slope:.3f})" if np.isfinite(slope) else "")
         ax.set_title(title)
-
-        if ax is axes[0]:
+        if ax is scatter_axes[0]:
             ax.set_ylabel("Movement in visualization")
         ax.set_xlabel("Movement in embedding")
 
+    # --- optional viz-drift panel
+    if include_viz_drift:
+        try:
+            from helper.visualization import calculate_embedding_drift
+            visualization_drifts = calculate_embedding_drift(P_list, axis=viz_axis)
+        except NameError:
+            raise NameError("calculate_embedding_drift is not defined.")
+
+        # --- determine per-type median scales on the largest skip ---
+        largest_skip = max(skips)
+
+        def _safe_med(a):
+            if a is None or len(a) == 0:
+                return 1.0
+            med = np.nanmedian(a)
+            return med if np.isfinite(med) and med != 0 else 1.0
+
+        # pull once; reuse below
+        emb_drifts = animation.embedding_drifts
+        cka_sims = animation.get_cka_similarities()
+
+        # visualization scale (raw vis drift)
+        vis_vals_L = np.asarray(visualization_drifts.get(largest_skip, []), dtype=float)
+        scale_vis = _safe_med(vis_vals_L)
+
+        # embedding scale
+        emb_vals_L = np.asarray(emb_drifts.get(largest_skip, []),
+                                dtype=float) if emb_drifts is not None else np.asarray([])
+        scale_emb = _safe_med(emb_vals_L)
+
+        # CKA scale (FLIPPED values)
+        if cka_sims is not None and largest_skip in cka_sims and cka_sims[largest_skip] is not None:
+            cka_vals_L = 1.0 - np.asarray(cka_sims[largest_skip], dtype=float)
+        else:
+            cka_vals_L = np.asarray([])
+        scale_cka = _safe_med(cka_vals_L)
+
+        # --- BACKGROUND: Embedding drift (light gray) & CKA (light yellow) ---
+        if show_background:
+            emb_drifts = animation.embedding_drifts
+            cka_sims = animation.get_cka_similarities()
+
+            for skip in skips:
+                if skip in emb_drifts and emb_drifts[skip] is not None:
+                    y = np.asarray(emb_drifts[skip], dtype=float) / scale_emb
+                    x = np.arange(len(y))
+                    m = np.isfinite(y)
+                    if m.any():
+                        viz_ax.plot(x[m], y[m], lw=0.5, alpha=emb_bg_alpha,
+                                    color=emb_bg_color, label="Emb Drift" if skip == largest_skip else None, zorder=0)
+
+                if skip in cka_sims and cka_sims[skip] is not None:
+                    y_raw = np.asarray(cka_sims[skip], dtype=float)
+                    y = np.where(np.isfinite(y_raw), 1.0 - y_raw, np.nan) / scale_cka
+                    x = np.arange(len(y))
+                    m = np.isfinite(y)
+                    if m.any():
+                        viz_ax.plot(x[m], y[m], lw=0.5, alpha=cka_bg_alpha,
+                                    color=cka_bg_color, label="CKA Sim" if skip == largest_skip else None, zorder=1)
+
+        # --- Foreground: Visualization drifts (scaled) ---
+        any_plotted = False
+        max_vis = 0
+        for skip in skips:
+            if skip in visualization_drifts and visualization_drifts[skip] is not None:
+                y = np.asarray(visualization_drifts[skip], dtype=float) / scale_vis
+                x = np.arange(len(y))
+                finite = np.isfinite(y)
+                if finite.any():
+                    # track max for ylim
+                    max_vis = max(max_vis, np.nanmax(y[finite]))
+                    viz_ax.plot(x[finite], y[finite], lw=1, label=f"Δt={skip}", zorder=2)
+                    any_plotted = True
+
+        viz_ax.set_title(viz_title)
+        viz_ax.set_xlabel("Time (frames)")
+        viz_ax.set_ylabel("Drift (proj.) [median-scaled]")
+        if viz_y_lim is not None:
+            viz_ax.set_ylim(*viz_y_lim)
+        else:
+            viz_ax.set_ylim(0, max_vis * 1.05)
+
+        if any_plotted:
+            viz_ax.legend(frameon=False, fontsize=8, ncols=1)
+        else:
+            viz_ax.text(0.5, 0.5, "No visualization drift data",
+                        ha='center', va='center', transform=viz_ax.transAxes)
+
     plt.tight_layout()
-    plt.show()
+    if show:
+        plt.show()
+    return fig, (scatter_axes, viz_ax)

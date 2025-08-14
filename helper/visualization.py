@@ -359,9 +359,10 @@ class Animation:
     def copy(self):
         return Animation(self.projections.copy(), self.title, self.run)
 
-    def save(self):
+    def save(self, file_title=None):
         from helper.data_manager import save_animation
-        save_animation(self)
+        self.get_cka_similarities() # Ensure to save CKA Similarities too
+        save_animation(self, file_title)
         return self
 
     def get_cka_similarities(self):
@@ -505,6 +506,10 @@ class Animation:
             fig_size_base=fig_size_base,
             start_frame=start_frame
         )
+
+    def eval_plot(self, *args, **kwargs):
+        return plots.evaluation_plot(self, *args, **kwargs)
+
 
 def load_stored_animation(run: Run, title: str):
     import os
