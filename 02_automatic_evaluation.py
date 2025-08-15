@@ -295,51 +295,64 @@ def evaluate_umap(run: Run, args):
 def evaluate_phate(run: Run, args):
     logger = CSVGridLogger("plots/results_phate.csv")
 
-    m_phate_animation = generate_mphate_animation(run)
-    m_phate_animation.save_as_gif()
-    save_animation_eval(m_phate_animation)
-    logger.set_ani(run, m_phate_animation)
+#    m_phate_animation = generate_mphate_animation(run)
+#    m_phate_animation.save_as_gif()
+#    save_animation_eval(m_phate_animation)
+#    logger.set_ani(run, m_phate_animation)
+#
+#    denoised = m_phate_animation.denoise()
+#    denoised.save_as_gif()
+#    save_animation_eval(denoised)
+#    logger.set_ani(run, denoised)
+#
+#    for t in [10, 20, 30]:
+#        ani = generate_mphate_animation(run,
+#                                        title=f"M-PHATE (t={t})",
+#                                        t=t)
+#        ani.save_as_gif()
+#        save_animation_eval(ani)
+#        logger.set_ani(run, ani)
+#        denoised = ani.denoise()
+#        denoised.save_as_gif()
+#        save_animation_eval(denoised)
+#        logger.set_ani(run, denoised)
+#
+#    for knn in [10, 20, 30]:
+#        ani = generate_mphate_animation(run,
+#                                        title=f"M-PHATE (interslice_knn={knn})",
+#                                        interslice_knn=knn)
+#        ani.save_as_gif()
+#        save_animation_eval(ani)
+#        logger.set_ani(run, ani)
+#        denoised = ani.denoise()
+#        denoised.save_as_gif()
+#        save_animation_eval(denoised)
+#        logger.set_ani(run, denoised)
+#
+#    for gamma in [0.0, 0.05, 0.1, 0.2]:
+#        ani = generate_mphate_animation(run,
+#                                        title=f"M-PHATE (gamma={gamma})",
+#                                        gamma=gamma)
+#        ani.save_as_gif()
+#        save_animation_eval(ani)
+#        logger.set_ani(run, ani)
+#        denoised = ani.denoise()
+#        denoised.save_as_gif()
+#        save_animation_eval(denoised)
+#        logger.set_ani(run, denoised)
 
-    denoised = m_phate_animation.denoise()
-    denoised.save_as_gif()
-    save_animation_eval(denoised)
-    logger.set_ani(run, denoised)
+    # Educated Guess
+    mphate_guess = generate_mphate_animation(run,
+                                             title=f"M-PHATE (t=20, gamma=0, interslice_knn=10)",
+                                             t=20, gamma=0, interslice_knn=10)
+    mphate_guess.save_as_gif()
+    save_animation_eval(mphate_guess)
+    logger.set_ani(run, mphate_guess)
 
-    for t in [10, 20, 30]:
-        ani = generate_mphate_animation(run,
-                                        title=f"M-PHATE (t={t})",
-                                        t=t)
-        ani.save_as_gif()
-        save_animation_eval(ani)
-        logger.set_ani(run, ani)
-        denoised = ani.denoise()
-        denoised.save_as_gif()
-        save_animation_eval(denoised)
-        logger.set_ani(run, denoised)
-
-    for knn in [10, 20, 30]:
-        ani = generate_mphate_animation(run,
-                                        title=f"M-PHATE (interslice_knn={knn})",
-                                        interslice_knn=knn)
-        ani.save_as_gif()
-        save_animation_eval(ani)
-        logger.set_ani(run, ani)
-        denoised = ani.denoise()
-        denoised.save_as_gif()
-        save_animation_eval(denoised)
-        logger.set_ani(run, denoised)
-
-    for gamma in [0.0, 0.05, 0.1, 0.2]:
-        ani = generate_mphate_animation(run,
-                                        title=f"M-PHATE (gamma={gamma})",
-                                        gamma=gamma)
-        ani.save_as_gif()
-        save_animation_eval(ani)
-        logger.set_ani(run, ani)
-        denoised = ani.denoise()
-        denoised.save_as_gif()
-        save_animation_eval(denoised)
-        logger.set_ani(run, denoised)
+    mphate_guess = mphate_guess.denoise()
+    mphate_guess.save_as_gif()
+    save_animation_eval(mphate_guess)
+    logger.set_ani(run, mphate_guess)
 
     logger.save()
 
@@ -355,6 +368,6 @@ if __name__ == "__main__":
     #general_plots(run, args)
     #evaluate_pca(run, args)
     #evaluate_umap(run, args)
-    #evaluate_phate(run, args)
+    evaluate_phate(run, args)
     #evaluate_tsne(run, args)
 

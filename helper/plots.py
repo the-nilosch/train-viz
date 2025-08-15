@@ -1426,8 +1426,6 @@ def _scatter_panel_density(ax, X_all, Y_all, *, sample_step, point_size, alpha, 
                            density_method, density_kwargs, density_log_norm):
     lim_x = glx if glx is not None else 1.05 * np.nanmax(X_all)
     lim_y = gly if gly is not None else 1.05 * np.nanmax(Y_all)
-    if lim_y <= lim_x:
-        lim_y = lim_x * 1.05
 
     rgba = _density_colors(X_all, Y_all, lim_x, lim_y, density_method, density_kwargs, density_log_norm)
     idx = np.arange(X_all.size)[::max(1, int(sample_step))]
