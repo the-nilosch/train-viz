@@ -1536,3 +1536,177 @@ def linear_mode_connectivity_path(run1, run2, num_points=50):
     # build the path: (1−α_i)*w1 + α_i*w2
     path = [(1 - a) * w1 + a * w2 for a in alphas]
     return path
+
+def _get_epoch_predictions(run, t, *, ensure_prob=True, eps=1e-12):
+    """
+    Return predictions for epoch t as (N, C) float array.
+    If ensure_prob=True, re-normalizes along classes to be safe.
+    """
+    P = np.asarray(run.results["val_distributions"][t], dtype=float)
+    if ensure_prob:
+        P = np.maximum(P, eps)
+        P = P / P.sum(axis=1, keepdims=True)
+    return P
+
+def _pred_similarity(X, Y, *, metric="cosine", eps=1e-12):
+    """
+    Similarity between two prediction sets X, Y of shapes (N, C) & (M, C).
+    We truncate to the smallest N and compare aligned samples.
+    Metrics:
+      - "cosine": cosine similarity on flattened vectors in [-1, 1]
+      - "js":     Jensen-Shannon similarity in [0, 1], defined as 1 - JS / log(2)
+    """
+    n = min(len(X), len(Y))
+    X, Y = X[:n], Y[:n]
+
+    if metric == "cosine":
+        x = X.reshape(1, -1)
+        y = Y.reshape(1, -1)
+        num = float(np.dot(x, y.T))
+        den = float(np.linalg.norm(x) * np.linalg.norm(y) + eps)
+        return num / den
+
+    if metric == "js":
+        # Per-sample JS divergence averaged over samples
+        # JS(P, Q) = 0.5 * [KL(P||M) + KL(Q||M)], with M = 0.5*(P+Q)
+        P = np.clip(X, eps, 1.0)
+        Q = np.clip(Y, eps, 1.0)
+        M = 0.5 * (P + Q)
+        kl_pm = (P * (np.log(P) - np.log(M))).sum(axis=1)
+        kl_qm = (Q * (np.log(Q) - np.log(M))).sum(axis=1)
+        js = 0.5 * (kl_pm + kl_qm)            # in nats
+        js_bits = js / np.log(2.0)            # normalize by log(2) for [0, 1] scale
+        sim = 1.0 - float(np.mean(js_bits))   # similarity: 1 (identical) → 0 (orthogonal)
+        return sim
+
+    raise ValueError("metric must be 'cosine' or 'js'")
+
+def compute_prediction_cross_epoch_similarity(
+    run_x,
+    run_y,
+    *,
+    metric="cosine",          # "cosine" or "js"
+    skip=1,
+    start_epoch=0,
+    desc_prefix=""
+):
+    """
+    Compute a coarse cross-epoch similarity grid between two runs' predictions.
+    Returns:
+      S  : (len(ix), len(iy)) similarity values
+      ix : sampled epoch indices for X (rows)
+      iy : sampled epoch indices for Y (cols)
+    """
+    if skip < 1:
+        raise ValueError("skip must be >= 1")
+
+    Tx = len(run_x.results["val_distributions"])
+    Ty = len(run_y.results["val_distributions"])
+
+    ix = list(range(start_epoch, Tx, skip))
+    iy = list(range(start_epoch, Ty, skip))
+
+    preds_x = [_get_epoch_predictions(run_x, t) for t in ix]
+    preds_y = [_get_epoch_predictions(run_y, s) for s in iy]
+
+    S = np.zeros((len(ix), len(iy)), dtype=float)
+    desc = f"{desc_prefix}Cross-epoch prediction similarity [{metric}] (skip={skip}, start={start_epoch})"
+    for a, Px in tqdm(list(enumerate(preds_x)), desc=desc):
+        for b, Py in enumerate(preds_y):
+            S[a, b] = _pred_similarity(Px, Py, metric=metric)
+
+    return S, ix, iy
+
+def compute_epochwise_embedding_cka(runs, skip=1):
+    """
+    For each epoch t, compute an (n_runs x n_runs) matrix where entry (i,j)
+    is the CKA similarity between runs[i].embeddings[t] and runs[j].embeddings[t].
+    Returns: list of matrices, one per epoch (like your prediction heatmaps).
+    """
+    n_runs = len(runs)
+    n_epochs = min(len(r.embeddings) for r in runs)
+
+    similarities = []
+    for t in tqdm(range(n_epochs)[::skip], desc="Computing epoch-wise embedding CKA"):
+        # Gather embeddings for this epoch
+        feats = [np.asarray(r.embeddings[t]) for r in runs]
+        n_samples = min(f.shape[0] for f in feats)
+        feats = [f[:n_samples] for f in feats]
+
+        # Build symmetric CKA matrix
+        M = np.eye(n_runs, dtype=float)
+        for i in range(n_runs):
+            for j in range(i + 1, n_runs):
+                cij = compute_cka(feats[i], feats[j])
+                M[i, j] = M[j, i] = float(cij)
+        similarities.append(M)
+
+    return similarities
+
+def _get_epoch_matrix(run, t, mode):
+    if mode == "embeddings":
+        # shape: (samples, features)
+        return np.asarray(run.embeddings[t])
+    elif mode == "predictions":
+        # list entry is (samples, classes); flatten to 1D (samples*classes)
+        dist = run.results["val_distributions"][t]  # shape: (N, C)  :contentReference[oaicite:3]{index=3}
+        return dist.reshape(-1, 1)  # (NC, 1) so cosine works (treat as a vector)
+    else:
+        raise ValueError("mode must be 'embeddings' or 'predictions'")
+
+def _sim(X, Y, similarity, mode):
+    from sklearn.metrics.pairwise import cosine_similarity
+    if similarity == "cka":
+        # Expect (N, D). Align by samples if needed.
+        n = min(len(X), len(Y))
+        return float(compute_cka(X[:n], Y[:n]))  # 0..1  :contentReference[oaicite:4]{index=4}
+    elif similarity == "cosine":
+        # Expect flattened vectors for predictions
+        x = X.reshape(1, -1)
+        y = Y.reshape(1, -1)
+        return float(cosine_similarity(x, y)[0, 0])
+    else:
+        raise ValueError("similarity must be 'cka' or 'cosine'")
+
+def compute_cross_epoch_similarity(
+    run_x,
+    run_y,
+    *,
+    mode="embeddings",        # "embeddings" or "predictions"
+    similarity="cka",         # "cka" (embeddings) or "cosine" (predictions)
+    skip=1,
+    start_epoch=0,
+    desc_prefix=""
+):
+    """
+    Compute a coarse cross-epoch similarity grid between two runs.
+
+    Returns
+    -------
+    S : np.ndarray, shape (len(ix), len(iy))
+        Similarity values for sampled epochs of X (rows) vs Y (cols).
+    ix, iy : list[int]
+        Actual epoch indices used for X and Y respectively.
+    """
+    if skip < 1:
+        raise ValueError("skip must be >= 1")
+
+    Tx = len(run_x.embeddings) if mode == "embeddings" else len(run_x.results["val_distributions"])
+    Ty = len(run_y.embeddings) if mode == "embeddings" else len(run_y.results["val_distributions"])
+
+    # Sampled epoch indices after start_epoch
+    ix = list(range(start_epoch, Tx, skip))
+    iy = list(range(start_epoch, Ty, skip))
+
+    # Pre-cache sampled epoch features/vectors
+    feats_x = [_get_epoch_matrix(run_x, t, mode) for t in ix]
+    feats_y = [_get_epoch_matrix(run_y, s, mode) for s in iy]
+
+    # Compute coarse similarity grid
+    S = np.zeros((len(ix), len(iy)), dtype=float)
+    desc = f"{desc_prefix}Cross-epoch {similarity.upper()} ({mode}) [skip={skip}, start={start_epoch}]"
+    for a, Xi in tqdm(list(enumerate(feats_x)), desc=desc):
+        for b, Yj in enumerate(feats_y):
+            S[a, b] = _sim(Xi, Yj, similarity=similarity, mode=mode)
+
+    return S, ix, iy

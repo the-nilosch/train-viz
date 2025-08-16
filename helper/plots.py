@@ -1623,3 +1623,170 @@ def _combined_skips_core(
     if show:
         plt.show()
     return fig, (scatter_axes, viz_ax)
+
+
+def plot_prediction_cross_epoch_heatmap(
+    S,
+    ix,
+    iy,
+    *,
+    title_x="Run X",
+    title_y="Run Y",
+    metric="cosine",          # "cosine" or "js"
+    figsize=(7, 6),
+    cmap="viridis",
+    vmin=None,
+    vmax=None,
+    show_percent=False,
+    percent_decimals=0,
+    vmin_from_data=False,
+    extra_title=""
+):
+    """
+    Plot cross-epoch prediction similarity S with epoch labels ix (rows) and iy (cols).
+    Options:
+      - show_percent: overlay values as percentages
+      - vmin_from_data: start color scale at min(S) instead of default
+    """
+    import seaborn as sns
+    S = np.asarray(S, dtype=float)
+
+    # sensible defaults per metric
+    if metric == "cosine":
+        default_vmin, default_vmax = -1.0, 1.0
+    elif metric == "js":
+        default_vmin, default_vmax = 0.0, 1.0
+    else:
+        default_vmin, default_vmax = None, None
+
+    if vmin_from_data:
+        data_min = float(np.nanmin(S))
+        vmin = data_min if vmin is None else vmin
+    else:
+        vmin = default_vmin if vmin is None else vmin
+
+    vmax = default_vmax if vmax is None else vmax
+
+    # Optional percent annotations (robust to NumPy string ops)
+    annot = None
+    fmt = None
+    annot_kws = None
+    if show_percent:
+        P = 100.0 * S
+        if percent_decimals == 0:
+            A = np.where(np.isnan(P), "", np.round(P).astype(int).astype(str))
+        else:
+            fmt_str = f"{{:.{percent_decimals}f}}"
+            A = np.where(np.isnan(P), "", np.vectorize(lambda x: fmt_str.format(x))(P))
+        mask = A != ""
+        A = A.astype(str)
+        A = np.where(mask, np.char.add(A, "%"), "")  # use np.char.add for string concat
+        annot = A
+        fmt = ""
+        annot_kws = {"fontsize": 7}
+
+    plt.figure(figsize=figsize)
+    ax = sns.heatmap(
+        S, cmap=cmap, vmin=vmin, vmax=vmax, square=True,
+        cbar_kws={"label": f"{metric.upper()} prediction similarity"},
+        annot=annot, fmt=fmt, annot_kws=annot_kws
+    )
+
+    # Epoch ticks with true indices
+    ax.set_xticks(np.arange(len(iy)) + 0.5)
+    ax.set_yticks(np.arange(len(ix)) + 0.5)
+    ax.set_xticklabels(iy, rotation=45, ha='right')
+    ax.set_yticklabels(ix)
+
+    ax.set_xlabel(f"Epoch (Y: {title_y})")
+    ax.set_ylabel(f"Epoch (X: {title_x})")
+    ax.set_title(f"{metric.upper()} cross-epoch prediction heatmap {extra_title}")
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_cross_epoch_similarity_heatmap(
+        S,
+        ix,
+        iy,
+        *,
+        title_x="Run X",
+        title_y="Run Y",
+        similarity="cka",  # "cka" or "cosine"
+        figsize=(7, 6),
+        cmap="magma",
+        vmin=None,
+        vmax=None,
+        show_percent=False,  # <— NEW: overlay values as %
+        percent_decimals=0,  # <— NEW: % precision
+        vmin_from_data=False,  # <— NEW: start scale at min(S) instead of default
+        extra_title=""
+):
+    """
+    Plot a cross-epoch similarity heatmap for precomputed S, ix, iy.
+    - show_percent=True overlays percentage labels (100 * value).
+    - vmin_from_data=True sets vmin to np.nanmin(S) instead of metric defaults.
+    """
+    import seaborn as sns
+
+    S = np.asarray(S, dtype=float)
+    # sensible metric defaults
+    if similarity.lower() == "cka":
+        default_vmin, default_vmax = 0.0, 1.0
+    elif similarity.lower() == "cosine":
+        default_vmin, default_vmax = -1.0, 1.0
+    else:
+        default_vmin, default_vmax = None, None
+
+    # start color scale at data min if requested
+    if vmin_from_data:
+        data_min = float(np.nanmin(S))
+        vmin = data_min if vmin is None else vmin
+    else:
+        vmin = default_vmin if vmin is None else vmin
+
+    vmax = default_vmax if vmax is None else vmax
+
+    # Optional percent annotations
+    annot = None
+    fmt = None
+    annot_kws = None
+    if show_percent:
+        P = 100.0 * S
+        if percent_decimals == 0:
+            annot = np.where(np.isnan(P), "", np.round(P).astype(int).astype(str))
+        else:
+            fmt_str = f"{{:.{percent_decimals}f}}"
+            annot = np.where(np.isnan(P), "", np.vectorize(lambda x: fmt_str.format(x))(P))
+
+        mask = annot != ""
+        annot = annot.astype(str)  # ensure string dtype
+        annot = np.where(mask, np.char.add(annot, "%"), "")  # no error now
+
+        fmt = ""  # values are preformatted strings
+        annot_kws = {"fontsize": 7}
+
+    plt.figure(figsize=figsize)
+    ax = sns.heatmap(
+        S, cmap=cmap, vmin=vmin, vmax=vmax, square=True,
+        cbar_kws={"label": f"{similarity.upper()} similarity"},
+        annot=annot, fmt=fmt, annot_kws=annot_kws
+    )
+
+    # Tick labels show the actual epoch numbers
+    ax.set_xticks(np.arange(len(iy)) + 0.5)
+    ax.set_yticks(np.arange(len(ix)) + 0.5)
+    ax.set_xticklabels(iy, rotation=45, ha='right')
+    ax.set_yticklabels(ix)
+
+    ax.set_xlabel(f"Epoch (Y: {title_y})")
+    ax.set_ylabel(f"Epoch (X: {title_x})")
+
+    extra = []
+    if show_percent: extra.append("values in %")
+    if vmin_from_data: extra.append(f"vmin={vmin:g}")
+    suffix = f" — {', '.join(extra)}" if extra else ""
+    ax.set_title(f"{similarity.upper()} cross-epoch heatmap{extra_title}")
+
+    plt.tight_layout()
+    plt.show()
