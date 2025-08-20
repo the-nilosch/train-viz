@@ -73,29 +73,37 @@ def get_dataloader_flat(
                           shuffle=shuffle, num_workers=num_workers), normalizer
 
 def add_lmc_paths(pt_files_per_run, num_points=10, lmc_dir="trainings/temp/"):
+    """
+    Given a list of runs (each run is a list of checkpoint .pt files),
+    compute LMC paths between the final checkpoints of all pairs of runs.
+    Saves each interpolated weight vector and appends the new "runs" to the list.
+    """
+    from itertools import combinations
     os.makedirs(lmc_dir, exist_ok=True)
     lmc_runs = []
 
-    # Get trajectory end:
-    trajectory_ends = [torch.load(pt_files[-1], map_location='cpu', weights_only=True) for pt_files in pt_files_per_run]
+    # Final checkpoints (one per run)
+    trajectory_ends = [
+        torch.load(run_files[-1], map_location='cpu', weights_only=True)
+        for run_files in pt_files_per_run
+    ]
 
-    for i, _ in enumerate(pt_files_per_run):
-        for j, _ in enumerate(pt_files_per_run):
-            if i == j or i < j:
-                continue
-            path = linear_mode_connectivity_path(
-                trajectory_ends[i],
-                trajectory_ends[j],
-                num_points)
+    # All unordered pairs: (a,b) with a < b
+    for a, b in combinations(range(len(pt_files_per_run)), 2):
+        path = linear_mode_connectivity_path(
+            trajectory_ends[a],
+            trajectory_ends[b],
+            num_points
+        )
 
-            lmc_run = []
+        lmc_run_files = []
+        for k, weights in enumerate(path):
+            # unique + informative filename: pair (a,b), step k of num_points
+            fname = os.path.join(lmc_dir, f"lmc_run_{a}-{b}_step-{k:03d}.pt")
+            torch.save(weights, fname)
+            lmc_run_files.append(fname)
 
-            for j, weights in enumerate(path):
-                fname = os.path.join(lmc_dir, f"lmc_run{i}_{j}.pt")
-                torch.save(weights, fname)
-                lmc_run.append(fname)
-
-            lmc_runs.append(lmc_run)
+        lmc_runs.append(lmc_run_files)
 
     return pt_files_per_run + lmc_runs
 
