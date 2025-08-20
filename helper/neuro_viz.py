@@ -143,7 +143,7 @@ def train_autoencoder(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     #scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
     scheduler = ReduceLROnPlateau(
-        optimizer, mode='min', factor=step_lr_factor, patience=step_lr_patience, threshold=1e-3, cooldown=0, min_lr=1e-6)
+        optimizer, mode='min', factor=step_lr_factor, patience=step_lr_patience, threshold=1e-3, cooldown=0, min_lr=1e-7)
     loss_fn = nn.MSELoss()
 
     best_loss = float('inf')
@@ -384,12 +384,16 @@ def compute_trajectory(
     bn_loader=None,
 ):
     """
-    Returns:
+    Returns (unchanged signature):
       trajectory_coordinates: [N, 2]
-      trajectory_models:     [N, D] (decoded, de-normalized)
+      trajectory_models:     [N, D] (decoded, de-normalized) == (2)_denorm
       trajectory_losses:     [N]    (task loss per repopulated model)
-      ae_losses_decode:      [N]    (AE loss on normalized input -> output during decode)
-      ae_losses_finetuned:   [N]    (AE loss after repopulate/BN on flattened model)
+      ae_losses_decode:      [N]    (1)_norm vs (2)_norm  (AE recon on normalized inputs)
+      ae_losses_finetuned:   [N]    (1)_denorm vs (3)_denorm  (**redefined** to your requested comparison)
+
+    Internally (not returned unless you choose to):
+      ae_losses_decode_denorm: [N]  (1)_denorm vs (2)_denorm
+      ae_losses_finetuned_norm:[N]  (1)_norm   vs (3)_norm
     """
     if not recalibrate_bn:
         print("Tip: set recalibrate_bn=True to refresh BN stats for more accurate losses.")
@@ -404,26 +408,33 @@ def compute_trajectory(
 
     # ---- Decode trajectory + AE loss (no fine-tuning) ----
     trajectory_models, trajectory_coordinates = [], []
-    ae_losses_decode = []
+    ae_losses_decode = []              # (1)_norm vs (2)_norm
+    orig_denorm_list = []              # store (1)_denorm aligned with samples
 
     with torch.no_grad():
         for batch in tqdm(trajectory_loader, desc="Decoding trajectory"):
-            # batch: normalized flattened weights, shape [B, D]
+            # batch: normalized flattened weights, shape [B, D]  == (1)_norm
             batch = batch.to(device)
 
-            x_recon_norm, z = ae_model(batch)                 # AE output in normalized space
+            x_recon_norm, z = ae_model(batch)  # (2)_norm and latent coords
             # per-sample MSE over feature dim
             ae_mse = F.mse_loss(x_recon_norm, batch, reduction='none').mean(dim=1)  # [B]
             ae_losses_decode.append(ae_mse.cpu())
 
             # store coords + de-normalized decoded weights for repopulation
             trajectory_coordinates.append(z.cpu())
-            x_recon = x_recon_norm * std + mean               # de-normalize
-            trajectory_models.append(x_recon.cpu())
+            x_recon_den = x_recon_norm * std + mean         # (2)_denorm
+            x_orig_den  = batch * std + mean                # (1)_denorm
+            orig_denorm_list.append(x_orig_den.cpu())
+            trajectory_models.append(x_recon_den.cpu())
 
-    trajectory_coordinates = torch.cat(trajectory_coordinates, dim=0)
-    trajectory_models = torch.cat(trajectory_models, dim=0)
-    ae_losses_decode = torch.cat(ae_losses_decode, dim=0).float()  # [N]
+    trajectory_coordinates = torch.cat(trajectory_coordinates, dim=0)     # [N, 2]
+    trajectory_models      = torch.cat(trajectory_models, dim=0)          # [N, D] (2)_denorm
+    orig_denorm_all        = torch.cat(orig_denorm_list, dim=0)           # [N, D] (1)_denorm
+    ae_losses_decode       = torch.cat(ae_losses_decode, dim=0).float()   # [N]
+
+    # (optional extra metric): (1)_denorm vs (2)_denorm
+    ae_losses_decode_denorm = ((trajectory_models - orig_denorm_all)**2).mean(dim=1).cpu().float()  # [N]
 
     print(f"✅ Decoded trajectory shapes: coords {trajectory_coordinates.shape}, models {trajectory_models.shape}")
 
@@ -432,10 +443,13 @@ def compute_trajectory(
 
     # ---- Compute task losses + AE loss after repopulation ----
     trajectory_losses = []
+    # redefine to your desired comparison: (1)_denorm vs (3)_denorm
     ae_losses_finetuned = []
+    # optional normalized variant
+    ae_losses_finetuned_norm = []
 
     for i in tqdm(range(trajectory_models.shape[0]), desc="Computing trajectory & AE(finetuned) losses"):
-        flat_cpu = trajectory_models[i, :]
+        flat_cpu = trajectory_models[i, :]  # (2)_denorm
         assert flat_cpu.numel() == total_params, "Mismatch in parameter size."
 
         with torch.no_grad():
@@ -454,26 +468,29 @@ def compute_trajectory(
                         break
             model.eval()
 
-        # Task loss
+        # Task loss (on current repopulated model == stage 3 after optional BN)
         with torch.no_grad():
             loss_val = loss_obj.get_loss(model, loss_name, whichloss).item()
         trajectory_losses.append(loss_val)
 
-        # AE loss on the (re)flattened, finetuned model
+        # Compare (1) original vs (3) finetuned in *denorm* space  -> your target metric
         with torch.no_grad():
-            flat_ft = _flatten_model_vec(model).to(device).view(1, -1)   # [1, D] on AE device
-            flat_ft_norm = (flat_ft - mean) / std                        # normalize to AE space
-            recon_ft_norm, _ = ae_model(flat_ft_norm)                    # AE forward
-            ae_mse_ft = F.mse_loss(recon_ft_norm, flat_ft_norm, reduction='none').mean(dim=1)  # [1]
-            ae_losses_finetuned.append(ae_mse_ft.squeeze(0).cpu().item())
+            flat_ft = _flatten_model_vec(model).to(device)  # (3)_denorm, [D]
+            mse_1v3_denorm = ((flat_ft.cpu() - orig_denorm_all[i])**2).mean().item()
+            ae_losses_finetuned.append(mse_1v3_denorm)
 
-    trajectory_losses = torch.tensor(trajectory_losses, dtype=torch.float32)         # [N]
-    ae_losses_finetuned = torch.tensor(ae_losses_finetuned, dtype=torch.float32)     # [N]
+            # optional normalized comparison
+            flat_ft_norm = ((flat_ft - mean) / std).view(1, -1)          # (3)_norm
+            orig_norm_i  = ((orig_denorm_all[i].to(device) - mean) / std).view(1, -1)  # (1)_norm
+            mse_1v3_norm = F.mse_loss(flat_ft_norm, orig_norm_i, reduction='mean').item()
+            ae_losses_finetuned_norm.append(mse_1v3_norm)
 
-    print(f"✅ Computed {trajectory_losses.shape[0]} task losses\n"
-          f"AE(decode) losses: {ae_losses_decode.mean()}, "
-          f"AE(finetuned) losses: {ae_losses_finetuned.mean()}")
+    trajectory_losses        = torch.tensor(trajectory_losses, dtype=torch.float32)        # [N]
+    ae_losses_finetuned      = torch.tensor(ae_losses_finetuned, dtype=torch.float32)      # [N] (1)_denorm vs (3)_denorm
 
+    print(f"AE loss changed (denorm) from {ae_losses_decode_denorm.mean():.4g} → {ae_losses_finetuned.mean():.4g}")
+
+    # Keep original 5-tuple API (with redefined ae_losses_finetuned as requested)
     return trajectory_coordinates, trajectory_models, trajectory_losses, ae_losses_decode, ae_losses_finetuned
 
 def repopulate_model_fixed(flattened_params, model):
@@ -484,6 +501,107 @@ def repopulate_model_fixed(flattened_params, model):
         param.data.copy_(sub_flattened)
         start_idx += size
     return model
+
+
+def compute_lmc_lines(
+    pt_files_per_run,
+    ae_model,
+    transform,
+    loss_obj,
+    model,
+    loss_name,
+    whichloss,
+    device,
+    num_points=10,
+    lmc_dir="trainings/temp/",
+    batch_size=64,
+    num_workers=0,
+    recalibrate_bn=True,
+    bn_recal_batches=100,
+    bn_loader=None,
+):
+    """
+    Constructs all Linear Mode Connectivity (LMC) paths between the *final checkpoints*
+    of the given runs (via your existing add_lmc_paths), evaluates each path with your
+    existing compute_trajectory, and returns lists of (coords, losses) per LMC path.
+
+    Returns:
+      lmc_coords_list:   [M] list of tensors with shape [num_points, 2]
+      lmc_losses_list:   [M] list of tensors with shape [num_points]
+      lmc_meta:          [M] list of dicts with metadata (source_run_i, source_run_j, pt_files)
+    """
+    # --- 1) Create LMC path files (uses your existing function) ---
+    #     NOTE: add_lmc_paths returns pt_files_per_run + lmc_runs
+    from torch.utils.data import Dataset
+
+    original_runs_count = len(pt_files_per_run)
+    all_runs = add_lmc_paths(
+        pt_files_per_run, num_points=num_points, lmc_dir=lmc_dir
+    )
+    lmc_runs = all_runs[original_runs_count:]  # only the new LMC runs (each is a list of .pt files)
+
+    # Small helper: dataset that yields *normalized flattened weights* expected by compute_trajectory
+    class _WeightsDatasetFromPtFiles(Dataset):
+        def __init__(self, pt_list, mean, std, device="cpu"):
+            self.pt_list = pt_list
+            self.mean = mean
+            self.std = std
+            self.device = device
+
+        def __len__(self):
+            return len(self.pt_list)
+
+        def __getitem__(self, idx):
+            # Load flattened weights (assumes checkpoints are flat or can be flattened elsewhere in your pipeline)
+            w = torch.load(self.pt_list[idx], map_location="cpu")
+            if isinstance(w, dict) and "flat" in w:
+                flat = torch.as_tensor(w["flat"], dtype=torch.float32)
+            else:
+                # If stored as a 1D tensor already:
+                flat = torch.as_tensor(w, dtype=torch.float32).view(-1)
+
+            # Normalize to AE space
+            flat = (flat.to(self.device) - self.mean) / self.std
+            return flat
+
+    lmc_coords_list = []
+    lmc_losses_list = []
+    lmc_meta = []
+
+    # --- 2) For each LMC path, build a loader and reuse your compute_trajectory ---
+    for path_idx, pt_list in enumerate(lmc_runs):
+        ds = _WeightsDatasetFromPtFiles(
+            pt_list,
+            mean=transform.mean.to(device),
+            std=transform.std.to(device),
+            device=device,
+        )
+        loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=False)
+
+        traj_coords, traj_models, traj_losses, ae_losses_decode, ae_losses_finetuned = compute_trajectory(
+            trajectory_loader=loader,
+            ae_model=ae_model,
+            transform=transform,
+            loss_obj=loss_obj,
+            model=model,
+            loss_name=loss_name,
+            whichloss=whichloss,
+            device=device,
+            recalibrate_bn=recalibrate_bn,
+            bn_recal_batches=bn_recal_batches,
+            bn_loader=bn_loader,
+        )
+
+        lmc_coords_list.append(traj_coords)   # [num_points, 2]
+        lmc_losses_list.append(traj_losses)   # [num_points]
+        lmc_meta.append({
+            "path_index": path_idx,
+            "pt_files": pt_list,
+            # If you care which original runs formed this path, encode it in filenames in add_lmc_paths
+            # (e.g., lmc_run{i}_{j}.pt). We pass the raw list back so you can parse if needed.
+        })
+
+    return lmc_coords_list, lmc_losses_list, lmc_meta
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
@@ -500,6 +618,8 @@ def plot_loss_landscape(
     loss_label='Cross Entropy Loss',
     trajectory_labels=None,
     label_positions=None,
+    lmc_coords_list=None,        # NEW
+    lmc_losses_list=None         # NEW
 ):
     # === PREPARE LOSSES ===
     grid_losses_pos = grid_losses.detach().cpu().numpy()
@@ -531,31 +651,24 @@ def plot_loss_landscape(
         ax.clabel(contour, fmt="%.2e", fontsize=8)
 
     cbar = plt.colorbar(contour, ax=ax, shrink=0.8)
-    ticks = np.logspace(np.log10(vmin), np.log10(vmax), 5)  # customize number here
+    ticks = np.logspace(np.log10(vmin), np.log10(vmax), 5)
     cbar.set_ticks(ticks)
     cbar.ax.set_ylabel(loss_label, fontsize=12)
 
-    # -- 2 & 3: Plot Multiple Trajectories --
+    # -- 2 & 3: Plot Training Trajectories --
     for z_tensor, losses_tensor in zip(trajectory_coords_list, trajectory_losses_list):
         z = z_tensor
         losses = losses_tensor
-        # Lines
         for i in range(len(z) - 1):
             ax.plot([z[i, 0], z[i + 1, 0]], [z[i, 1], z[i + 1, 1]], color='k', linewidth=1)
-        # Points
         ax.scatter(
             z[:, 0], z[:, 1],
-            c=losses,
-            cmap=cmap,
-            norm=norm,
-            s=40,
-            edgecolors='k'
+            c=losses, cmap=cmap, norm=norm,
+            s=40, edgecolors='k'
         )
 
-    # ===== 3b: Annotate each trajectory at its last point =====
-    offset_pts = 5  # how far, in points, to shift the label
-
-    # defaults
+    # -- 3b: Annotate each trajectory at its last point --
+    offset_pts = 5
     n_traj = len(trajectory_coords_list)
     if trajectory_labels is None:
         trajectory_labels = [f"traj {i}" for i in range(n_traj)]
@@ -563,12 +676,8 @@ def plot_loss_landscape(
         label_positions = ['auto'] * n_traj
 
     for idx, (z, losses, lab) in enumerate(zip(
-            trajectory_coords_list,
-            trajectory_losses_list,
-            trajectory_labels)):
+            trajectory_coords_list, trajectory_losses_list, trajectory_labels)):
         x_end, y_end = float(z[-1, 0]), float(z[-1, 1])
-
-        # decide alignment
         pos = label_positions[idx]
         if pos != 'auto':
             ha, va = pos
@@ -577,55 +686,52 @@ def plot_loss_landscape(
             dy = z[-1, 1] - z[-2, 1]
             ha = 'left'   if dx >= 0 else 'right'
             va = 'bottom' if dy >= 0 else 'top'
-
-        # convert alignment into point‐offset direction
-        ox =  offset_pts if ha == 'left'   else (-offset_pts if ha == 'right' else 0)
-        oy =  offset_pts if va == 'bottom' else (-offset_pts if va == 'top'   else 0)
-
-        # annotate with offset
+        ox = offset_pts if ha == 'left' else (-offset_pts if ha == 'right' else 0)
+        oy = offset_pts if va == 'bottom' else (-offset_pts if va == 'top' else 0)
         ax.annotate(
-            lab,
-            xy=(x_end, y_end),
-            xytext=(ox, oy),
-            textcoords='offset points',
-            ha=ha, va=va,
-            fontsize=7,
-            bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.6),
+            lab, xy=(x_end, y_end), xytext=(ox, oy),
+            textcoords='offset points', ha=ha, va=va,
+            fontsize=7, bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.6),
             arrowprops=dict(arrowstyle='-', lw=0)
         )
 
-    # -- 4 OPTIONAL: Density Contours --
+    # -- 4: Plot LMC Lines (in red) --
+    if lmc_coords_list is not None and lmc_losses_list is not None:
+        for z_tensor, losses_tensor in zip(lmc_coords_list, lmc_losses_list):
+            z = z_tensor
+            losses = losses_tensor
+            ax.plot(z[:, 0], z[:, 1], color='red', linewidth=1.5, linestyle='--')
+            ax.scatter(
+                z[:, 0], z[:, 1],
+                c=losses, cmap=cmap, norm=norm,
+                s=30, edgecolors='r'
+            )
+
+    # -- 5 OPTIONAL: Density Contours --
     if draw_density and rec_grid_models is not None:
         try:
             from NeuroVisualizer.neuro_aux.utils import get_density
             density = get_density(rec_grid_models.detach().cpu().numpy(), type='inverse', p=2)
             density = density.reshape(xx.shape)
             density_levels = np.logspace(
-                np.log10(max(density.min(), 1e-3)),
-                np.log10(density.max()),
-                15
+                np.log10(max(density.min(), 1e-3)), np.log10(density.max()), 15
             )
             CS_density = ax.contour(
                 X, Y, density,
                 levels=density_levels,
-                colors='white',
-                linewidths=0.8
+                colors='white', linewidths=0.8
             )
             ax.clabel(CS_density, fmt=ticker.FormatStrFormatter('%.1f'), fontsize=7)
         except Exception as e:
             print("Density contour skipped:", e)
 
-    # -- 5 Labels, Grid, Style --
-    ax.set_title('Loss Landscape with Training Trajectory', fontsize=14)
+    # -- 6 Labels, Grid, Style --
+    ax.set_title('Loss Landscape with Training Trajectories and LMC Paths', fontsize=14)
     ax.set_xlabel('Latent Dimension 1', fontsize=12)
     ax.set_ylabel('Latent Dimension 2', fontsize=12)
     ax.grid(True, linestyle='--', alpha=0.3)
 
-    # -- 6 Show --
-    #plt.show()
-
     return fig
-
 
 def compute_lmc_loss_path(
     weight_path: list[np.ndarray],
@@ -670,3 +776,89 @@ def compute_lmc_loss_path(
         
 
     return losses
+
+
+def plot_density_only(
+    xx, yy, rec_grid_models,
+    trajectory_coords_list=None,
+    trajectory_losses_list=None,
+    cmap="plasma",
+    point_cmap="plasma",
+    point_size=40,
+):
+    """
+    Plot density (filled contours) and optionally overlay training trajectories.
+      - Lines: black
+      - Points: colored by per-step losses if provided, else white
+
+    Args:
+        xx, yy: meshgrid tensors from Neuro-Visualizer (same shape)
+        rec_grid_models: decoded models on the grid (for density)
+        trajectory_coords_list: list of [T_i, 2] tensors (optional)
+        trajectory_losses_list: list of [T_i] arrays/tensors (optional)
+    """
+    X = xx.cpu().numpy()
+    Y = yy.cpu().numpy()
+
+    try:
+        from NeuroVisualizer.neuro_aux.utils import get_density
+
+        # --- Density ---
+        density = get_density(rec_grid_models.detach().cpu().numpy(), type='inverse', p=2)
+        density = density.reshape(xx.shape)
+
+        # Guard for LogNorm
+        dmin = max(float(np.nanmin(density)), 1e-8)
+        dmax = float(np.nanmax(density))
+        if not np.isfinite(dmax) or dmax <= dmin:
+            raise ValueError(f"Invalid density range: dmin={dmin}, dmax={dmax}")
+
+        levels = np.logspace(np.log10(dmin), np.log10(dmax), 50)
+
+        fig, ax = plt.subplots(figsize=(7, 6))
+        CS = ax.contourf(
+            X, Y, density,
+            levels=levels,
+            cmap=cmap,
+            norm=LogNorm(vmin=dmin, vmax=dmax)
+        )
+
+        cbar = plt.colorbar(CS, ax=ax, shrink=0.8)
+        cbar.set_label("Density", fontsize=12)
+        cbar.set_ticks(np.logspace(np.log10(dmin), np.log10(dmax), 5))
+
+        # --- Trajectories (optional) ---
+        if trajectory_coords_list is not None and len(trajectory_coords_list) > 0:
+            for idx, z_tensor in enumerate(trajectory_coords_list):
+                z = np.asarray(z_tensor)
+                # lines
+                if len(z) >= 2:
+                    ax.plot(z[:, 0], z[:, 1], color='k', linewidth=1.2, alpha=0.9, zorder=3)
+                # points (loss-colored if provided)
+                if trajectory_losses_list is not None and idx < len(trajectory_losses_list) and trajectory_losses_list[idx] is not None:
+                    losses = np.asarray(trajectory_losses_list[idx])
+                    # robust positive norm for coloring (LogNorm ok if losses>0; else fallback linear)
+                    if np.all(np.isfinite(losses)) and np.nanmin(losses) > 0:
+                        pn = LogNorm(vmin=max(np.nanmin(losses), 1e-8), vmax=np.nanmax(losses))
+                        sc = ax.scatter(
+                            z[:, 0], z[:, 1],
+                            c=losses, cmap=point_cmap, norm=pn,
+                            s=point_size, edgecolors='k', linewidths=0.5, zorder=4
+                        )
+                        # one shared colorbar for the last scatter added
+                        cb2 = plt.colorbar(sc, ax=ax, shrink=0.6, pad=0.02)
+                        cb2.set_label("Trajectory loss", fontsize=10)
+                    else:
+                        ax.scatter(z[:, 0], z[:, 1], s=point_size, c='white', edgecolors='k', linewidths=0.5, zorder=4)
+                else:
+                    ax.scatter(z[:, 0], z[:, 1], s=point_size, c='white', edgecolors='k', linewidths=0.5, zorder=4)
+
+        ax.set_title("Density Plot (+ Trajectories)", fontsize=14)
+        ax.set_xlabel("Latent Dimension 1", fontsize=12)
+        ax.set_ylabel("Latent Dimension 2", fontsize=12)
+
+        return fig
+
+    except Exception as e:
+        print("Density plot skipped:", e)
+        return None
