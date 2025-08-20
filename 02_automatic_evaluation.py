@@ -209,83 +209,94 @@ def evaluate_umap(run: Run, args):
     import warnings
     warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn.utils.deprecation")
 
-    # Cosine vs Euclidean
-    umap_ani = generate_umap_animation(run, fit_basis='all_n')
-    umap_cosine = generate_umap_animation(run, fit_basis='all_n', metric='cosine')
-    umap_ani.save_as_gif()
-    umap_cosine.save_as_gif()
-    save_animation_eval(umap_ani)
-    save_animation_eval(umap_cosine)
-    logger.set_ani(run, umap_ani)
-    logger.set_ani(run, umap_cosine)
+#    # Cosine vs Euclidean
+#    umap_ani = generate_umap_animation(run, fit_basis='all_n')
+#    umap_cosine = generate_umap_animation(run, fit_basis='all_n', metric='cosine')
+#    umap_ani.save_as_gif()
+#    umap_cosine.save_as_gif()
+#    save_animation_eval(umap_ani)
+#    save_animation_eval(umap_cosine)
+#    logger.set_ani(run, umap_ani)
+#    logger.set_ani(run, umap_cosine)
+#
+#    # Denoised
+#    umap_ani_denoised = umap_ani.denoise()
+#    umap_cosine_denoised = umap_cosine.denoise()
+#    umap_ani_denoised.save_as_gif()
+#    umap_cosine_denoised.save_as_gif()
+#    save_animation_eval(umap_ani_denoised)
+#    save_animation_eval(umap_cosine_denoised)
+#    logger.set_ani(run, umap_ani_denoised)
+#    logger.set_ani(run, umap_cosine_denoised)
+#
+#    # Neighbors
+#    umap_neighbors_5 = generate_umap_animation(run, metric='cosine', n_neighbors=5)
+#    umap_neighbors_10 = generate_umap_animation(run, metric='cosine', n_neighbors=10)
+#    umap_neighbors_20 = generate_umap_animation(run, metric='cosine', n_neighbors=20)
+#    umap_neighbors_30 = generate_umap_animation(run, metric='cosine', n_neighbors=30)
+#    umap_neighbors_50 = generate_umap_animation(run, metric='cosine', n_neighbors=50)
+#
+#    umap_neighbors_5.save_as_gif()
+#    umap_neighbors_10.save_as_gif()
+#    umap_neighbors_20.save_as_gif()
+#    umap_neighbors_30.save_as_gif()
+#    umap_neighbors_50.save_as_gif()
+#    save_animation_eval(umap_neighbors_5)
+#    save_animation_eval(umap_neighbors_10)
+#    save_animation_eval(umap_neighbors_20)
+#    save_animation_eval(umap_neighbors_30)
+#    save_animation_eval(umap_neighbors_50)
+#
+#    logger.set_ani(run, umap_neighbors_5)
+#    logger.set_ani(run, umap_neighbors_10)
+#    logger.set_ani(run, umap_neighbors_20)
+#    logger.set_ani(run, umap_neighbors_30)
+#    logger.set_ani(run, umap_neighbors_50)
+#
+#    logger.set_ani(run, umap_neighbors_5.denoise())
+#    logger.set_ani(run, umap_neighbors_10.denoise())
+#    logger.set_ani(run, umap_neighbors_20.denoise())
+#    logger.set_ani(run, umap_neighbors_30.denoise())
+#    logger.set_ani(run, umap_neighbors_50.denoise())
+#
+#    # Min Dist
+#    umap_dist_001 = generate_umap_animation(run, metric='cosine', min_dist=0.001)
+#    umap_dist_01 = generate_umap_animation(run, metric='cosine', min_dist=0.01)
+#    umap_dist_2 = generate_umap_animation(run, metric='cosine', min_dist=0.2)
+#    umap_dist_5 = generate_umap_animation(run, metric='cosine', min_dist=0.5)
+#
+#    umap_dist_001.save_as_gif()
+#    umap_dist_01.save_as_gif()
+#    umap_dist_2.save_as_gif()
+#    umap_dist_5.save_as_gif()
+#    save_animation_eval(umap_dist_001)
+#    save_animation_eval(umap_dist_01)
+#    save_animation_eval(umap_dist_2)
+#    save_animation_eval(umap_dist_5)
+#
+#    logger.set_ani(run, umap_dist_001)
+#    logger.set_ani(run, umap_dist_01)
+#    logger.set_ani(run, umap_dist_2)
+#    logger.set_ani(run, umap_dist_5)
+#
+#    logger.set_ani(run, umap_dist_001.denoise())
+#    logger.set_ani(run, umap_dist_01.denoise())
+#    logger.set_ani(run, umap_dist_2.denoise())
+#    logger.set_ani(run, umap_dist_5.denoise())
+#
+#    # Educated Guess
+#    umap_guess = generate_umap_animation(run, metric='cosine', min_dist=0.2, n_neighbors=20).denoise()
+#    umap_guess.save_as_gif()
+#    save_animation_eval(umap_guess)
+#    logger.set_ani(run, umap_guess)
 
-    # Denoised
-    umap_ani_denoised = umap_ani.denoise()
-    umap_cosine_denoised = umap_cosine.denoise()
-    umap_ani_denoised.save_as_gif()
-    umap_cosine_denoised.save_as_gif()
-    save_animation_eval(umap_ani_denoised)
-    save_animation_eval(umap_cosine_denoised)
-    logger.set_ani(run, umap_ani_denoised)
-    logger.set_ani(run, umap_cosine_denoised)
+    # Online OptionGuess
+    umap_guess = generate_umap_animation(run, metric='cosine', min_dist=0.2, n_neighbors=20, online=True)
+    umap_guess.save_as_gif()
+    save_animation_eval(umap_guess)
+    logger.set_ani(run, umap_guess)
 
-    # Neighbors
-    umap_neighbors_5 = generate_umap_animation(run, metric='cosine', n_neighbors=5)
-    umap_neighbors_10 = generate_umap_animation(run, metric='cosine', n_neighbors=10)
-    umap_neighbors_20 = generate_umap_animation(run, metric='cosine', n_neighbors=20)
-    umap_neighbors_30 = generate_umap_animation(run, metric='cosine', n_neighbors=30)
-    umap_neighbors_50 = generate_umap_animation(run, metric='cosine', n_neighbors=50)
-
-    umap_neighbors_5.save_as_gif()
-    umap_neighbors_10.save_as_gif()
-    umap_neighbors_20.save_as_gif()
-    umap_neighbors_30.save_as_gif()
-    umap_neighbors_50.save_as_gif()
-    save_animation_eval(umap_neighbors_5)
-    save_animation_eval(umap_neighbors_10)
-    save_animation_eval(umap_neighbors_20)
-    save_animation_eval(umap_neighbors_30)
-    save_animation_eval(umap_neighbors_50)
-
-    logger.set_ani(run, umap_neighbors_5)
-    logger.set_ani(run, umap_neighbors_10)
-    logger.set_ani(run, umap_neighbors_20)
-    logger.set_ani(run, umap_neighbors_30)
-    logger.set_ani(run, umap_neighbors_50)
-
-    logger.set_ani(run, umap_neighbors_5.denoise())
-    logger.set_ani(run, umap_neighbors_10.denoise())
-    logger.set_ani(run, umap_neighbors_20.denoise())
-    logger.set_ani(run, umap_neighbors_30.denoise())
-    logger.set_ani(run, umap_neighbors_50.denoise())
-
-    # Min Dist
-    umap_dist_001 = generate_umap_animation(run, metric='cosine', min_dist=0.001)
-    umap_dist_01 = generate_umap_animation(run, metric='cosine', min_dist=0.01)
-    umap_dist_2 = generate_umap_animation(run, metric='cosine', min_dist=0.2)
-    umap_dist_5 = generate_umap_animation(run, metric='cosine', min_dist=0.5)
-
-    umap_dist_001.save_as_gif()
-    umap_dist_01.save_as_gif()
-    umap_dist_2.save_as_gif()
-    umap_dist_5.save_as_gif()
-    save_animation_eval(umap_dist_001)
-    save_animation_eval(umap_dist_01)
-    save_animation_eval(umap_dist_2)
-    save_animation_eval(umap_dist_5)
-
-    logger.set_ani(run, umap_dist_001)
-    logger.set_ani(run, umap_dist_01)
-    logger.set_ani(run, umap_dist_2)
-    logger.set_ani(run, umap_dist_5)
-
-    logger.set_ani(run, umap_dist_001.denoise())
-    logger.set_ani(run, umap_dist_01.denoise())
-    logger.set_ani(run, umap_dist_2.denoise())
-    logger.set_ani(run, umap_dist_5.denoise())
-
-    # Educated Guess
-    umap_guess = generate_umap_animation(run, metric='cosine', min_dist=0.2, n_neighbors=20).denoise()
+    umap_guess = umap_guess.denoise()
     umap_guess.save_as_gif()
     save_animation_eval(umap_guess)
     logger.set_ani(run, umap_guess)
@@ -295,51 +306,51 @@ def evaluate_umap(run: Run, args):
 def evaluate_phate(run: Run, args):
     logger = CSVGridLogger("plots/results_phate.csv")
 
-#    m_phate_animation = generate_mphate_animation(run)
-#    m_phate_animation.save_as_gif()
-#    save_animation_eval(m_phate_animation)
-#    logger.set_ani(run, m_phate_animation)
-#
-#    denoised = m_phate_animation.denoise()
-#    denoised.save_as_gif()
-#    save_animation_eval(denoised)
-#    logger.set_ani(run, denoised)
-#
-#    for t in [10, 20, 30]:
-#        ani = generate_mphate_animation(run,
-#                                        title=f"M-PHATE (t={t})",
-#                                        t=t)
-#        ani.save_as_gif()
-#        save_animation_eval(ani)
-#        logger.set_ani(run, ani)
-#        denoised = ani.denoise()
-#        denoised.save_as_gif()
-#        save_animation_eval(denoised)
-#        logger.set_ani(run, denoised)
-#
-#    for knn in [10, 20, 30]:
-#        ani = generate_mphate_animation(run,
-#                                        title=f"M-PHATE (interslice_knn={knn})",
-#                                        interslice_knn=knn)
-#        ani.save_as_gif()
-#        save_animation_eval(ani)
-#        logger.set_ani(run, ani)
-#        denoised = ani.denoise()
-#        denoised.save_as_gif()
-#        save_animation_eval(denoised)
-#        logger.set_ani(run, denoised)
-#
-#    for gamma in [0.0, 0.05, 0.1, 0.2]:
-#        ani = generate_mphate_animation(run,
-#                                        title=f"M-PHATE (gamma={gamma})",
-#                                        gamma=gamma)
-#        ani.save_as_gif()
-#        save_animation_eval(ani)
-#        logger.set_ani(run, ani)
-#        denoised = ani.denoise()
-#        denoised.save_as_gif()
-#        save_animation_eval(denoised)
-#        logger.set_ani(run, denoised)
+    m_phate_animation = generate_mphate_animation(run)
+    m_phate_animation.save_as_gif()
+    save_animation_eval(m_phate_animation)
+    logger.set_ani(run, m_phate_animation)
+
+    denoised = m_phate_animation.denoise()
+    denoised.save_as_gif()
+    save_animation_eval(denoised)
+    logger.set_ani(run, denoised)
+
+    for t in [10, 20, 30]:
+        ani = generate_mphate_animation(run,
+                                        title=f"M-PHATE (t={t})",
+                                        t=t)
+        ani.save_as_gif()
+        save_animation_eval(ani)
+        logger.set_ani(run, ani)
+        denoised = ani.denoise()
+        denoised.save_as_gif()
+        save_animation_eval(denoised)
+        logger.set_ani(run, denoised)
+
+    for knn in [10, 20, 30]:
+        ani = generate_mphate_animation(run,
+                                        title=f"M-PHATE (interslice_knn={knn})",
+                                        interslice_knn=knn)
+        ani.save_as_gif()
+        save_animation_eval(ani)
+        logger.set_ani(run, ani)
+        denoised = ani.denoise()
+        denoised.save_as_gif()
+        save_animation_eval(denoised)
+        logger.set_ani(run, denoised)
+
+    for gamma in [0.0, 0.05, 0.1, 0.2]:
+        ani = generate_mphate_animation(run,
+                                        title=f"M-PHATE (gamma={gamma})",
+                                        gamma=gamma)
+        ani.save_as_gif()
+        save_animation_eval(ani)
+        logger.set_ani(run, ani)
+        denoised = ani.denoise()
+        denoised.save_as_gif()
+        save_animation_eval(denoised)
+        logger.set_ani(run, denoised)
 
     # Educated Guess
     mphate_guess = generate_mphate_animation(run,
@@ -355,6 +366,52 @@ def evaluate_phate(run: Run, args):
     logger.set_ani(run, mphate_guess)
 
     logger.save()
+    
+def evaluate_best(run):
+    from helper.visualization import compare_animations
+
+    ani_pca_all = generate_pca_animation(run, fit_basis='all')
+    #ani_pca_window = generate_pca_animation(run, fit_basis='window', window_size=16).denoise(do_cka_similarities=False)
+    tsne_blended = generate_tsne_animation(run)
+    umap_ani = generate_umap_animation(
+        run,
+        metric='cosine',
+        n_neighbors=20,
+        min_dist=0.2
+    )
+    mphate_ani = generate_mphate_animation(
+        run,
+        t='auto',
+        gamma=0,
+        interslice_knn=20
+    )
+
+    fig = compare_animations(
+        animations=[
+            ani_pca_all,
+            #ani_pca_window,
+            tsne_blended,
+            umap_ani,
+            mphate_ani
+        ],
+        custom_titles=[
+            "PCA on all",
+            #"PCA window denoised",
+            "t-SNE",
+            "UMAP",
+            "M-PHATE"
+        ],
+        initial_datapoints=[0, 0.05, 0.1, 0.2, 0.5, 1],  # -> 3 independent row sliders
+        figsize_per_plot=(3, 3),
+        shared_axes=False,
+        add_confusion_matrix=True,
+        annotate_confusion_matrix=True,
+    )
+
+    fig.savefig(f"plots/comparison {run.run_id}.pdf",
+                format="pdf", bbox_inches="tight")
+    plt.close(fig)
+
 
 def save_animation_eval(animation: Animation):
     fig = animation.eval_plot()
@@ -368,6 +425,8 @@ if __name__ == "__main__":
     #general_plots(run, args)
     #evaluate_pca(run, args)
     #evaluate_umap(run, args)
-    evaluate_phate(run, args)
+    #evaluate_phate(run, args)
     #evaluate_tsne(run, args)
+
+    evaluate_best(run)
 

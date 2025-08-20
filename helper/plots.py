@@ -1790,3 +1790,227 @@ def plot_cross_epoch_similarity_heatmap(
 
     plt.tight_layout()
     plt.show()
+
+def draw_compare_animations_grid(
+    proj_list,
+    labels0,
+    titles,
+    *,
+    T,
+    limits_shared=False,
+    add_confusion_matrix=True,
+    cms=None,
+    class_names=None,
+    initial_datapoints=(0, 0.5, 1),
+    figsize_per_plot=(4, 4),
+    annotate_confusion_matrix=True,
+):
+    """
+    Render the grid UI:
+      - columns: one per projection; optional extra last column with confusion matrix
+      - rows: one per requested time step slider; plus a last row with drift plots
+        * rows 0..R-1: scatter frames (independent sliders per row)
+        * last row (R): visualization drift per column
+        * last row & last col: embedding drift + 1-CKA (provided by caller via ani.run)
+
+    Parameters
+    ----------
+    proj_list : list[np.ndarray]   shape per item: (T, N, 2)
+    labels0   : list[np.ndarray]   labels for the (constant) sample set
+    titles    : list[str]
+    T         : int                number of frames (after interpolation/truncation)
+    limits_shared : bool           share axis limits across columns
+    add_confusion_matrix : bool
+    cms       : np.ndarray or None shape (T, C, C) if provided
+    class_names : list or None     for CM ticks (optional: we hide ticks for compactness)
+    initial_datapoints : iterable of fractions (0..1)
+    figsize_per_plot : (w, h)
+    annotate_confusion_matrix : bool
+
+    Returns
+    -------
+    fig, row_sliders
+    """
+    from helper.visualization import calculate_embedding_drift  # for last-row plots
+
+    # Axis limits (square)
+    limits = _compute_axis_limits_list(proj_list, shared=limits_shared)
+
+    R_vis = len(initial_datapoints)
+    R_total = R_vis + 1
+    C_vis = len(proj_list)
+    C_total = C_vis + (1 if add_confusion_matrix and cms is not None and cms.size else 0)
+    use_cm = (C_total > C_vis)
+
+    fig, axes = plt.subplots(
+        R_total, C_total,
+        figsize=(figsize_per_plot[0] * C_total, figsize_per_plot[1] * R_total),
+        squeeze=False
+    )
+
+    # === top R_vis rows: projections (+ optional CM column) ===
+    row_sliders = []
+    scatter_handles = [[None for _ in range(C_vis)] for _ in range(R_vis)]
+
+    for r, frac in enumerate(initial_datapoints):
+        init_idx = _fraction_to_index(frac, T)
+        sld = widgets.IntSlider(min=0, max=T-1, step=1, value=init_idx, description=f"frame {r+1}")
+        row_sliders.append(sld)
+
+        # projection columns
+        for c in range(C_vis):
+            ax = axes[r][c]
+            lim = limits[c]
+            ax.set_xlim(lim); ax.set_ylim(lim)
+            ax.set_aspect('equal')
+            ax.set_xticks([]); ax.set_yticks([])
+            if r == 0:
+                ax.set_title(titles[c])
+
+            P = proj_list[c][init_idx]
+            lbls = labels0[c]
+            num_classes = len(np.unique(lbls))
+            cmap = 'tab10' if num_classes <= 10 else 'tab20'
+            sc = ax.scatter(P[:, 0], P[:, 1], c=lbls, cmap=cmap, s=5, alpha=0.6)
+            scatter_handles[r][c] = sc
+
+        # confusion matrix column (if enabled)
+        if use_cm:
+            ax_cm = axes[r][-1]
+            vmax = cms.max()
+            im = ax_cm.imshow(cms[init_idx], cmap='Blues', vmin=0, vmax=vmax)
+            C = cms.shape[1]
+            cmap_conf = 'Blues'  # or keep whatever you already use
+            # pick same colormap as scatter
+            cm_scatter = plt.get_cmap('tab10' if C <= 10 else 'tab20')
+            norm = plt.Normalize(vmin=0, vmax=C - 1)
+            diag_colors = cm_scatter(norm(np.arange(C)))
+
+            # ticks at each class index
+            ticks = np.arange(C)
+            ax_cm.set_xticks(ticks)
+            ax_cm.set_yticks(ticks)
+
+            # use a bullet for every tick
+            ax_cm.set_xticklabels(['●'] * C)
+            ax_cm.set_yticklabels(['●'] * C)
+
+            # color each bullet
+            for i, lbl in enumerate(ax_cm.get_xticklabels()):
+                lbl.set_color(diag_colors[i])
+                lbl.set_fontsize(12)
+            for i, lbl in enumerate(ax_cm.get_yticklabels()):
+                lbl.set_color(diag_colors[i])
+                lbl.set_fontsize(12)
+
+            ax_cm.set_title(f"Confusion (t={init_idx})")
+
+            txts = None
+            if annotate_confusion_matrix:
+                C = cms.shape[1]
+                txts = []
+                for i in range(C):
+                    row_txt=[]
+                    for j in range(C):
+                        val = int(cms[init_idx, i, j])
+                        color='white' if val > vmax/2 else 'black'
+                        row_txt.append(ax_cm.text(j, i, val, ha='center', va='center', color=color, fontsize=8))
+                    txts.append(row_txt)
+
+            def _mk_cm_update(ax_cm=ax_cm, im=im, vmax=vmax, txts=txts):
+                def _update_cm(change):
+                    f = change['new']
+                    im.set_data(cms[f])
+                    ax_cm.set_title(f"Confusion (t={f})")
+                    if txts is not None:
+                        C = cms.shape[1]
+                        for i in range(C):
+                            for j in range(C):
+                                val = int(cms[f, i, j])
+                                t = txts[i][j]
+                                t.set_text(val)
+                                t.set_color('white' if val > vmax/2 else 'black')
+                    ax_cm.figure.canvas.draw_idle()
+                return _update_cm
+            sld.observe(_mk_cm_update(), names='value')
+
+        # updater for all scatters in this row
+        def _mk_row_update(rr=r, sld=sld):
+            def _update(change):
+                f = change['new']
+                for cc in range(C_vis):
+                    sc = scatter_handles[rr][cc]
+                    sc.set_offsets(proj_list[cc][f])
+                    sc.set_array(np.asarray(labels0[cc]))
+                fig.canvas.draw_idle()
+            return _update
+        sld.observe(_mk_row_update(), names='value')
+
+    # === last row: vis-drifts per projection column ===
+    for c in range(C_vis):
+        ax = axes[R_vis][c]
+        # Reuse the same function used for HD drift; on 2D projections it measures "vis drift".
+        vis_drifts = calculate_embedding_drift(proj_list[c], axis=1)  # dict of {1,2,4,8,16}
+        for k in sorted(vis_drifts.keys()):
+            vals = vis_drifts[k]
+            ax.plot(range(1, len(vals)+1), vals, label=f"Vis drift {k}", alpha=0.7)
+        ax.set_title("Visualization drift")
+        ax.set_xlabel("Frame idx")
+        #ax.set_ylabel("Avg. movement")
+        ax.legend(loc='upper right', fontsize='x-small')
+
+    # === last row & last col: reserved for caller to overlay emb. drift + 1-CKA ===
+    # (The caller can grab axes[R_vis][-1] if use_cm else skip.)
+    plt.tight_layout()
+    display(widgets.VBox(row_sliders))
+    #plt.show()
+    return fig, axes, row_sliders
+
+
+def _fraction_to_index(frac, T: int) -> int:
+    """Map a fraction in [0,1] to a valid frame index [0, T-1]."""
+    frac = max(0.0, min(1.0, float(frac)))
+    return int(round(frac * (T - 1)))
+
+def _compute_axis_limits_list(proj_list, shared: bool):
+    """Symmetric square limits per column, or shared across all columns."""
+    if shared:
+        all_proj = np.concatenate([P.reshape(-1, P.shape[-1]) for P in proj_list], axis=0)
+        max_abs = float(np.max(np.abs(all_proj)))
+        return [(-max_abs, max_abs)] * len(proj_list)
+    else:
+        limits = []
+        for P in proj_list:
+            max_abs = float(np.max(np.abs(P)))
+            limits.append((-max_abs, max_abs))
+        return limits
+
+
+def plot_emb_drift_and_cka_sim(emb_drifts, cka, ax):
+    ax_left = ax
+    ax_right = ax_left.twinx()  # secondary y-axis for 1-CKA
+
+    cka = {k: [1 - (0.0 if (np.isnan(x)) else x) for x in v] for k, v in cka.items()}
+
+    # embedding drift on left y-axis
+    for k in sorted(emb_drifts.keys()):
+        ax_left.plot(range(1, len(emb_drifts[k]) + 1),
+                     emb_drifts[k], label=f"Emb drift {k}", alpha=0.5)
+    ax_left.set_ylabel("Embedding drift")
+    ax_left.set_ylim(bottom=0)
+
+    # 1-CKA on right y-axis
+    for k in sorted(cka.keys()):
+        ax_right.plot(range(1, len(cka[k]) + 1),
+                      cka[k], linestyle='--', label=f"1-CKA (k={k})", alpha=0.9)
+    ax_right.set_ylabel("1 - CKA")
+    ax_right.set_ylim(bottom=0)
+
+    # combine legends from both axes
+    lines, labels = ax_left.get_legend_handles_labels()
+    lines2, labels2 = ax_right.get_legend_handles_labels()
+    ax_left.legend(lines + lines2, labels + labels2,
+                   loc='upper right', fontsize='x-small')
+
+    ax_left.set_title("Embedding drift + 1-CKA")
+    ax_left.set_xlabel("Frame idx")

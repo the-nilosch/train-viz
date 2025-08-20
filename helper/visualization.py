@@ -797,6 +797,7 @@ def generate_pca_animation(
         window_size=10,
         out_dim=2,  # 2D vs 3D
         fit_basis_n=5,
+        load_and_save=True
 ):
     from sklearn.decomposition import PCA
 
@@ -808,9 +809,10 @@ def generate_pca_animation(
         title = f'PCA window ({window_size}){" 3D" if out_dim == 3 else ""}'
 
         # Try to load animation
-        ani = load_stored_animation(run, title)
-        if ani is not None:
-            return ani
+        if load_and_save:
+            ani = load_stored_animation(run, title)
+            if ani is not None:
+                return ani
 
         from scipy.linalg import orthogonal_procrustes
 
@@ -868,7 +870,10 @@ def generate_pca_animation(
         for i in tqdm(range(max_frames), desc="PCA frames"):
             projections.append(reducer.transform(embeddings_list[i]))
 
-    return Animation(projections=projections, title=title, run=run).save()
+    ani = Animation(projections=projections, title=title, run=run)
+    if load_and_save:
+        ani.save()
+    return ani
 
 
 def generate_tsne_animation(
@@ -881,6 +886,7 @@ def generate_tsne_animation(
         tsne_update=1,
         metric='euclidean',  # for umap and tsne
         out_dim=2,  # 2D vs 3D
+        load_and_save=True
 ):
     from sklearn.manifold import TSNE
 
@@ -896,9 +902,10 @@ def generate_tsne_animation(
              f'{" 3D" if out_dim == 3 else ""})')
 
     # Try to load animation
-    ani = load_stored_animation(run, title)
-    if ani is not None:
-        return ani
+    if load_and_save:
+        ani = load_stored_animation(run, title)
+        if ani is not None:
+            return ani
 
     print("Initializing t-SNE...")
     tsne = TSNE(n_components=out_dim, init=tsne_init, perplexity=tsne_perplexity, random_state=random_state,
@@ -923,9 +930,30 @@ def generate_tsne_animation(
             new = tsne.fit_transform(embeddings_list[i]) * tsne_update + projections[-1] * (1 - tsne_update)
             projections.append(new)
 
+    ani = Animation(projections=projections, title=title, run=run)
+    if load_and_save:
+        ani.save()
+    return ani
 
-    return Animation(projections=projections, title=title, run=run).save()
 
+def _select_basis_indices(i_end_inclusive: int, *, fit_basis: str,
+                          fit_basis_n: int, fit_last_n: int, fit_max_n: int):
+    """Return sorted unique frame indices ∈ [0, i_end_inclusive] for fitting."""
+    i = int(i_end_inclusive)
+    if fit_basis == 'all':
+        return np.arange(0, i + 1)
+    elif fit_basis == 'all_n':
+        return np.arange(0, i + 1, max(1, int(fit_basis_n)))
+    elif fit_basis == 'last_n':
+        n = max(1, int(fit_last_n))
+        start = max(0, i - n + 1)
+        return np.arange(start, i + 1)
+    elif fit_basis == 'max_n':
+        n = max(1, int(fit_max_n))
+        n = min(n, i + 1)
+        return np.unique(np.linspace(0, i, n).round().astype(int))
+    else:
+        raise ValueError(f"Invalid fit_basis: {fit_basis}")
 
 
 def generate_umap_animation(
@@ -938,7 +966,11 @@ def generate_umap_animation(
         min_dist=0.1,
         metric='euclidean',  # for umap and tsne
         out_dim=2,  # 2D vs 3D
-        fit_basis_n=5,
+        load_and_save=True,
+        fit_basis_n=5,  # step for 'all_n'
+        fit_last_n=20,  # window for 'last_n'
+        fit_max_n=100,  # cap for 'max_n'
+        online=False
 ):
     import umap
 
@@ -946,45 +978,81 @@ def generate_umap_animation(
     embeddings_list = run.embeddings.copy()
     max_frames = max_frames or len(embeddings_list)
 
-    # Determine basis data
-    if fit_basis == 'first':
-        basis_data = embeddings_list[0]
-    elif fit_basis == 'last':
-        basis_data = embeddings_list[max_frames - 1]
-    elif fit_basis == 'all':
-        basis_data = np.concatenate(embeddings_list, axis=0)
-    elif fit_basis == 'all_n':
-        basis_data = np.concatenate(embeddings_list[::fit_basis_n], axis=0)
-    else:
-        raise ValueError(f"Invalid pca_fit_basis: {fit_basis}")
-
+    # ---- title / cache key
     title = (f'UMAP (n={n_neighbors}, dist={min_dist}, {metric}, '
-            f'{"reverse computation, " if reverse_computation else ""}'
+             f'{"reverse computation " if reverse_computation else ""}'
+             f'{"ONLINE" if online else ""}'
              f'{" 3D" if out_dim == 3 else ""})')
 
     # Try to load animation
-    ani = load_stored_animation(run, title)
-    if ani is not None:
-        return ani
+    if load_and_save:
+        ani = load_stored_animation(run, title)
+        if ani is not None:
+            return ani
 
     reducer = umap.UMAP(n_components=out_dim,
                         n_neighbors=n_neighbors,
                         min_dist=min_dist,
                         metric=metric,
                         random_state=random_state)
-    if reverse_computation:
-        for i in tqdm(range(max_frames - 1, -1, -1), desc="UMAP frames"):
-            reducer.fit(embeddings_list[i])
-            projection = reducer.transform(embeddings_list[i])
-            projections.insert(0, projection)
-    else:
-        print(f"Fit UMAP on basis data: {fit_basis}")
-        reducer.fit(basis_data)
-        for i in tqdm(range(max_frames), desc="UMAP frames"):
-            projection = reducer.transform(embeddings_list[i])
-            projections.append(projection)
 
-    return Animation(projections=projections, title=title, run=run).save()
+    # ---- ONLINE MODE: fit on *past* frames, optionally only every n steps
+    if online:
+        if reverse_computation:
+            raise ValueError("online=True incompatible with reverse_computation=True.")
+        if fit_basis not in {'all', 'all_n', 'last_n', 'max_n'}:
+            raise ValueError(f"[online] Unsupported fit_basis='{fit_basis}'.")
+
+        print(f"[online] UMAP basis='{fit_basis}' "
+              f"(all_n step={fit_basis_n}, last_n={fit_last_n}, max_n={fit_max_n})")
+
+        for i in tqdm(range(max_frames), desc="UMAP (online)"):
+            # refit policy:
+            # - 'all_n': refit every fit_basis_n frames
+            # - others: refit every frame (cheap + keeps basis tight to recent history)
+            need_refit = (i == 0) or (fit_basis != 'all_n') or (i % max(1, fit_basis_n) == 0)
+            if need_refit:
+                idxs = _select_basis_indices(
+                    i, fit_basis=fit_basis,
+                    fit_basis_n=fit_basis_n,
+                    fit_last_n=fit_last_n,
+                    fit_max_n=fit_max_n
+                )
+                basis_parts = [embeddings_list[j] for j in idxs]
+                basis_data = np.concatenate(basis_parts, axis=0)
+                reducer.fit(basis_data)
+
+            projections.append(reducer.transform(embeddings_list[i]))
+
+    else:
+        # Determine basis data
+        if fit_basis == 'first':
+            basis_data = embeddings_list[0]
+        elif fit_basis == 'last':
+            basis_data = embeddings_list[max_frames - 1]
+        elif fit_basis == 'all':
+            basis_data = np.concatenate(embeddings_list, axis=0)
+        elif fit_basis == 'all_n':
+            basis_data = np.concatenate(embeddings_list[::fit_basis_n], axis=0)
+        else:
+            raise ValueError(f"Invalid pca_fit_basis: {fit_basis}")
+
+        if reverse_computation:
+            for i in tqdm(range(max_frames - 1, -1, -1), desc="UMAP frames"):
+                reducer.fit(embeddings_list[i])
+                projection = reducer.transform(embeddings_list[i])
+                projections.insert(0, projection)
+        else:
+            print(f"Fit UMAP on basis data: {fit_basis}")
+            reducer.fit(basis_data)
+            for i in tqdm(range(max_frames), desc="UMAP frames"):
+                projection = reducer.transform(embeddings_list[i])
+                projections.append(projection)
+
+    ani = Animation(projections=projections, title=title, run=run)
+    if load_and_save:
+        ani.save()
+    return ani
 
 def generate_phate_animation(
         run: Run,
@@ -995,7 +1063,8 @@ def generate_phate_animation(
         t=20,
         n_jobs=-1,
         random_state=42,
-        window=0  # number of frames before to include for fitting
+        window=0,  # number of frames before to include for fitting
+        load_and_save=True
 ):
     import phate
     import numpy as np
@@ -1041,21 +1110,27 @@ def generate_phate_animation(
         projections.append(projection)
         prev_projection = projection.copy()
 
-    return Animation(projections=projections, title=title, run=run)
+    ani = Animation(projections=projections, title=title, run=run)
+    if load_and_save:
+        ani.save()
+    return ani
 
-def generate_mphate_animation(run: Run, title="M-PHATE", t='auto', gamma=0, interslice_knn=25, *args, **kwargs):
+def generate_mphate_animation(run: Run, title="M-PHATE", t='auto', gamma=0, interslice_knn=25, load_and_save=True, *args, **kwargs):
     file_title = f"M-PHATE gm={gamma} knn={interslice_knn} t={t}"
 
-    ani = load_stored_animation(run, file_title)
-    if ani is not None:
-        ani.title = title
-        return ani
+    if load_and_save:
+        ani = load_stored_animation(run, file_title)
+        if ani is not None:
+            ani.title = title
+            return ani
 
     mphate_emb = compute_mphate_embeddings(run, gamma=gamma, interslice_knn=interslice_knn, t=t, *args, **kwargs)
     projections = [mphate_emb[i] for i in range(mphate_emb.shape[0])]
 
-    return Animation(projections=projections, title=title, run=run).save(file_title=file_title)
-
+    ani = Animation(projections=projections, title=title, run=run)
+    if load_and_save:
+        ani.save(file_title=file_title)
+    return ani
 
 def denoise_projections(projections, blend=0.5, window_size=5, mode='window'):
     """
@@ -1710,3 +1785,87 @@ def compute_cross_epoch_similarity(
             S[a, b] = _sim(Xi, Yj, similarity=similarity, mode=mode)
 
     return S, ix, iy
+
+
+def compare_animations(
+    animations,
+    custom_titles=None,
+    initial_datapoints=[0, 0.5, 1],
+    figsize_per_plot=(4, 4),
+    shared_axes=False,
+    add_confusion_matrix=True,
+    annotate_confusion_matrix=True,
+    interpolate=False,
+    steps_per_transition=3,
+):
+    """
+    Orchestrates data prep, then delegates rendering to plots.draw_compare_animations_grid().
+    Also overlays the last-row/last-col Embedding drift + 1-CKA panel.
+    """
+    if len(animations) == 0:
+        raise ValueError("No animations provided.")
+
+    # Resolve per-animation projections (optionally interpolated), labels, titles
+    proj_list, labels0, T_all = [], [], []
+    titles = custom_titles if custom_titles is not None else [ani.title for ani in animations]
+
+    for ani in animations:
+        P = np.array(ani.projections)
+        if interpolate:
+            P = plots._interpolate_projections(P, steps_per_transition)
+        proj_list.append(P)
+        labels0.append(ani.labels[0])
+        T_all.append(P.shape[0])
+
+    # allow mismatched by truncating to min length
+    T = min(T_all)
+    proj_list = [P[:T] for P in proj_list]
+
+    # Prepare confusion matrices (from first run)
+    cms = None
+    class_names = None
+    if add_confusion_matrix:
+        run0 = animations[0].run
+        cms_try = np.array(run0.results.get('val_confusion_matrices', []))
+        if cms_try.size > 0:
+            # resample CM to match T frames
+            if len(cms_try) != T:
+                idxs = np.linspace(0, len(cms_try) - 1, T).round().astype(int)
+                cms_try = cms_try[idxs]
+            cms = cms_try
+            try:
+                from helper.vision_classification import get_text_labels
+                class_names = get_text_labels(run0.dataset)
+            except Exception:
+                C = cms.shape[1]
+                class_names = list(range(C))
+        else:
+            add_confusion_matrix = False
+
+    # === delegate all plotting to plots.py ===
+    fig, axes, row_sliders = plots.draw_compare_animations_grid(
+        proj_list=proj_list,
+        labels0=labels0,
+        titles=titles,
+        T=T,
+        limits_shared=shared_axes,
+        add_confusion_matrix=add_confusion_matrix,
+        cms=cms,
+        class_names=class_names,
+        initial_datapoints=initial_datapoints,
+        figsize_per_plot=figsize_per_plot,
+        annotate_confusion_matrix=annotate_confusion_matrix,
+    )
+
+    # === overlay last row & last column: Embedding drift + 1-CKA ===
+    if add_confusion_matrix and cms is not None:
+        run = animations[0].run
+        emb_drifts = run.embedding_drifts.copy()
+        cka = animations[0].get_cka_similarities().copy()
+
+        r_last = len(initial_datapoints)  # last row index
+        plots.plot_emb_drift_and_cka_sim(emb_drifts, cka, axes[r_last][-1])
+
+    #fig.tight_layout()
+
+    return fig

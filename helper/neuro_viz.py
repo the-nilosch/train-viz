@@ -127,7 +127,8 @@ def train_autoencoder(
     avoid_overheat=False,
     step_lr_patience: int = 5,
     step_lr_factor: int = 0.5,
-    last_saved_loss:int = None
+    last_saved_loss:int = None,
+    max_reload_attempts: int = 2
 ):
     """
     Generic improved AE training loop with early stopping and scheduler.
@@ -136,6 +137,8 @@ def train_autoencoder(
     from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
     from torch.optim.lr_scheduler import ReduceLROnPlateau
     import time
+
+    reload_attempts = 0
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     #scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
@@ -185,7 +188,8 @@ def train_autoencoder(
                 do_save = (rel_drop >= save_delta_pct)
 
             if do_save:
-                time.sleep(5)
+                if avoid_overheat:
+                    time.sleep(5)
                 torch.save(model.state_dict(), save_path)
                 last_saved_loss = avg_loss
                 #if verbose:
@@ -196,8 +200,16 @@ def train_autoencoder(
                 print(f"No improvement for {epochs_no_improve} epochs.")
 
         if epochs_no_improve >= patience:
-            if verbose:
-                print(f"Early stopping triggered after {patience} epochs with no improvement.")
+            if os.path.exists(save_path) and reload_attempts < max_reload_attempts:
+                print(f"⤴️  Reloading best checkpoint (attempt {reload_attempts + 1}/{max_reload_attempts})")
+                state = torch.load(save_path, map_location=device)
+                model.load_state_dict(state)
+                model.to(device)
+                epochs_no_improve = 0
+                reload_attempts += 1
+                continue
+
+            print(f"Early stopping triggered after {patience} epochs with no improvement.")
             break
 
         # Log to CSV every few epochs
