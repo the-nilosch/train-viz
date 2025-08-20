@@ -125,7 +125,7 @@ def train_autoencoder(
     verbose=False,
     save_delta_pct: float = 0.01,       # <-- relative drop (e.g. 0.01 for 1%)
     avoid_overheat=False,
-    step_lr_patience: int = 5,
+    step_lr_patience: int = 4,
     step_lr_factor: int = 0.5,
     last_saved_loss:int = None,
     max_reload_attempts: int = 2
@@ -365,6 +365,11 @@ class Loss:
         else:
             raise ValueError(f"Loss type not defined: {whichloss}")
 
+def _flatten_model_vec(m: torch.nn.Module) -> torch.Tensor:
+    # If you have a project-specific flattener, call it here instead.
+    from torch.nn.utils import parameters_to_vector
+    return parameters_to_vector(m.parameters()).detach()
+
 def compute_trajectory(
     trajectory_loader,
     ae_model,
@@ -375,65 +380,101 @@ def compute_trajectory(
     whichloss,
     device,
     recalibrate_bn: bool = True,
-    bn_recal_batches: int = 100
+    bn_recal_batches: int = 100,
+    bn_loader=None,
 ):
     """
-    Computes:
-    - trajectory_coordinates (2D latent space)
-    - trajectory_models (decoded weights)
-    - trajectory_losses (loss values)
+    Returns:
+      trajectory_coordinates: [N, 2]
+      trajectory_models:     [N, D] (decoded, de-normalized)
+      trajectory_losses:     [N]    (task loss per repopulated model)
+      ae_losses_decode:      [N]    (AE loss on normalized input -> output during decode)
+      ae_losses_finetuned:   [N]    (AE loss after repopulate/BN on flattened model)
     """
     if not recalibrate_bn:
-        print(f"With recalibrate_bn=True, the normalization layers could be recalibrated for better loss values")
-    # ---- Decode trajectory ----
-    trajectory_models = []
-    trajectory_coordinates = []
+        print("Tip: set recalibrate_bn=True to refresh BN stats for more accurate losses.")
 
     ae_model.eval()
+    model = model.to(device)
+    model_device = next(model.parameters()).device
+    total_params = sum(p.numel() for p in model.parameters())
+
+    mean = transform.mean.to(device)
+    std  = transform.std.to(device)
+
+    # ---- Decode trajectory + AE loss (no fine-tuning) ----
+    trajectory_models, trajectory_coordinates = [], []
+    ae_losses_decode = []
+
     with torch.no_grad():
         for batch in tqdm(trajectory_loader, desc="Decoding trajectory"):
+            # batch: normalized flattened weights, shape [B, D]
             batch = batch.to(device)
-            x_recon, z = ae_model(batch)
+
+            x_recon_norm, z = ae_model(batch)                 # AE output in normalized space
+            # per-sample MSE over feature dim
+            ae_mse = F.mse_loss(x_recon_norm, batch, reduction='none').mean(dim=1)  # [B]
+            ae_losses_decode.append(ae_mse.cpu())
+
+            # store coords + de-normalized decoded weights for repopulation
             trajectory_coordinates.append(z.cpu())
-            x_recon = x_recon * transform.std.to(device) + transform.mean.to(device)
+            x_recon = x_recon_norm * std + mean               # de-normalize
             trajectory_models.append(x_recon.cpu())
 
     trajectory_coordinates = torch.cat(trajectory_coordinates, dim=0)
     trajectory_models = torch.cat(trajectory_models, dim=0)
+    ae_losses_decode = torch.cat(ae_losses_decode, dim=0).float()  # [N]
 
     print(f"✅ Decoded trajectory shapes: coords {trajectory_coordinates.shape}, models {trajectory_models.shape}")
 
-    # ---- Compute losses ----
+    # BN recal source
+    bn_src = bn_loader or getattr(loss_obj, "train_loader", None) or trajectory_loader
 
+    # ---- Compute task losses + AE loss after repopulation ----
     trajectory_losses = []
-    for i in tqdm(range(trajectory_models.shape[0]), desc="Computing trajectory losses"):
-        # sanity-check size
-        model_flattened = trajectory_models[i, :]
-        total_params = sum(p.numel() for p in model.parameters())
-        assert model_flattened.numel() == total_params, "Mismatch in parameter size."
+    ae_losses_finetuned = []
 
-        # 1) repopulate model weights
+    for i in tqdm(range(trajectory_models.shape[0]), desc="Computing trajectory & AE(finetuned) losses"):
+        flat_cpu = trajectory_models[i, :]
+        assert flat_cpu.numel() == total_params, "Mismatch in parameter size."
+
         with torch.no_grad():
-            model = repopulate_model_fixed(model_flattened.clone(), model)
+            # repopulate model from decoded weights
+            flat = flat_cpu.to(model_device, non_blocking=True)
+            model = repopulate_model_fixed(flat, model)  # in-place or returns model
 
-        # 2) optional BN recalibration
-        if recalibrate_bn:
+        # (optional) BN recalibration
+        if recalibrate_bn and bn_src is not None:
             model.train()
             with torch.no_grad():
-                for batch_idx, (x, _) in enumerate(loss_obj.train_loader):
-                    if batch_idx >= bn_recal_batches:
+                for b_idx, batch in enumerate(bn_src):
+                    x = batch[0] if (isinstance(batch, (list, tuple)) and len(batch) >= 1) else batch
+                    model(x.to(model_device, non_blocking=True))
+                    if b_idx + 1 >= bn_recal_batches:
                         break
-                    model(x.to(device))
-            model.to(device).eval()
+            model.eval()
 
-        loss = loss_obj.get_loss(model, loss_name, whichloss).detach()
-        trajectory_losses.append(loss)
+        # Task loss
+        with torch.no_grad():
+            loss_val = loss_obj.get_loss(model, loss_name, whichloss).item()
+        trajectory_losses.append(loss_val)
 
-    trajectory_losses = torch.stack(trajectory_losses)
+        # AE loss on the (re)flattened, finetuned model
+        with torch.no_grad():
+            flat_ft = _flatten_model_vec(model).to(device).view(1, -1)   # [1, D] on AE device
+            flat_ft_norm = (flat_ft - mean) / std                        # normalize to AE space
+            recon_ft_norm, _ = ae_model(flat_ft_norm)                    # AE forward
+            ae_mse_ft = F.mse_loss(recon_ft_norm, flat_ft_norm, reduction='none').mean(dim=1)  # [1]
+            ae_losses_finetuned.append(ae_mse_ft.squeeze(0).cpu().item())
 
-    print(f"✅ Computed {trajectory_losses.shape[0]} trajectory losses")
+    trajectory_losses = torch.tensor(trajectory_losses, dtype=torch.float32)         # [N]
+    ae_losses_finetuned = torch.tensor(ae_losses_finetuned, dtype=torch.float32)     # [N]
 
-    return trajectory_coordinates, trajectory_models, trajectory_losses
+    print(f"✅ Computed {trajectory_losses.shape[0]} task losses\n"
+          f"AE(decode) losses: {ae_losses_decode.mean()}, "
+          f"AE(finetuned) losses: {ae_losses_finetuned.mean()}")
+
+    return trajectory_coordinates, trajectory_models, trajectory_losses, ae_losses_decode, ae_losses_finetuned
 
 def repopulate_model_fixed(flattened_params, model):
     start_idx = 0
@@ -512,7 +553,7 @@ def plot_loss_landscape(
         )
 
     # ===== 3b: Annotate each trajectory at its last point =====
-    offset_pts = 12  # how far, in points, to shift the label
+    offset_pts = 5  # how far, in points, to shift the label
 
     # defaults
     n_traj = len(trajectory_coords_list)
@@ -548,7 +589,7 @@ def plot_loss_landscape(
             xytext=(ox, oy),
             textcoords='offset points',
             ha=ha, va=va,
-            fontsize=10,
+            fontsize=7,
             bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.6),
             arrowprops=dict(arrowstyle='-', lw=0)
         )
